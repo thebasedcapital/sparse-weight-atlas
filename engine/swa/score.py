@@ -26,6 +26,10 @@ Cost: ``score_weight`` is the reference implementation (one weight, slice-inner;
 ``--from-specs``) and reloads slices 01..11 for every weight.  ``Scorer.score_many`` is the
 production path: it loops slice-outer (each slice loaded once per call, not once per weight)
 and packs up to ``--batch`` variants across weights of one layer into each ``ablate`` call.
+``--cov-penalty MU`` (default 0.5) selects f* among the exactly-scored slice-00 candidates by
+``A.score - MU * A.cov`` instead of the paper's plain ``A.score`` argmax, and records the
+winning ``select_obj`` (``--cov-penalty 0`` reproduces the plain argmax).  See CONTRACT.md.
+
 ``--exact-top N`` (default 4) limits the slice-00 exact evaluation to the top-N candidates by
 proxy score; ``--exact-top 0`` scores every gated candidate and reproduces ``score_weight``.
 """
@@ -48,6 +52,10 @@ from .predicate import check_python_detail, eval_spec, load_vocab, spec_to_pytho
 from .replay import Replayer
 
 COVERAGE_MAX = 0.5
+# f* selection: A.score - COVERAGE_PENALTY * A.cov (see CONTRACT.md "Scores"); 0 reproduces
+# the paper's plain argmax.  Same default as swa-synth --cov-penalty, so synthesis and
+# scoring price coverage identically.
+COVERAGE_PENALTY = 0.5
 NOISE_FLOOR = 1e-6
 ROBUST_T = 0.75
 N_ROBUST = 10
@@ -90,11 +98,13 @@ def _ratio(numer: float, denom: float) -> Optional[float]:
 
 class Scorer:
     def __init__(self, model: str, device: str = "cuda", dtype: torch.dtype = torch.float32,
-                 batch: int = 8, runs_dir: str = "runs", verbose: bool = True):
+                 batch: int = 8, runs_dir: str = "runs", verbose: bool = True,
+                 cov_penalty: float = COVERAGE_PENALTY):
         self.model = model
         self.runs = Path(runs_dir) / model
         self.verbose = verbose
         self.batch = max(1, int(batch))
+        self.cov_penalty = float(cov_penalty)
         self.rep = Replayer(model, device=device, dtype=dtype)
         v = load_vocab(model, runs_dir)
         self.vocab_tokens: List[str] = v["tokens"]
@@ -137,6 +147,20 @@ class Scorer:
 
     def mask(self, spec: Any) -> torch.Tensor:
         return eval_spec(spec, self.inputs, self.classes)
+
+    def select_obj(self, a: Optional[Dict[str, Any]]) -> float:
+        """``A.score - mu * A.cov``: the quantity f* is chosen by (-inf when unusable)."""
+        if not a or a.get("score") is None:
+            return -math.inf
+        return float(a["score"]) - self.cov_penalty * float(a.get("cov") or 0.0)
+
+    def _cand_obj(self, cand: Dict[str, Any]) -> float:
+        """Selection quantity from a candidate's own proxy (used to order --exact-top)."""
+        pr = cand.get("proxy") or {}
+        base = pr.get("score_val", pr.get("score"))
+        if base is None:
+            return -math.inf
+        return float(base) - self.cov_penalty * float(pr.get("cov") or 0.0)
 
     # -- CE variants --------------------------------------------------------------------
 
@@ -271,7 +295,8 @@ class Scorer:
         """cands: [{"spec","py","desc","proxy"?}]. Assumes slice 00 is loaded."""
         assert self._k == 0, "score_weight requires slice 00 loaded"
         rec: Dict[str, Any] = {"wid": int(wid), "status": "scored", "dce": None, "spec": None,
-                               "py": None, "desc": None, "A": None, "B": None, "robust": None}
+                               "py": None, "desc": None, "A": None, "B": None, "robust": None,
+                               "select_obj": None, "cov_penalty": self.cov_penalty}
         dce = self.full_ce([wid])[0] - self.ce0_mean
         rec["dce"] = dce
 
@@ -330,13 +355,15 @@ class Scorer:
                  "inv": _ratio(ce_nf[i] - self.ce0_mean, dce),
                  "cov": covs[i]}
             a["score"] = None if (a["rec"] is None or a["inv"] is None) else min(a["rec"], 1.0 - a["inv"])
-            if a["score"] is not None and a["score"] > best_score:
-                best_score = a["score"]
-                best = (i, a)
+            obj = self.select_obj(a)
+            if obj > best_score:
+                best_score = obj
+                best = (i, a, obj)
         if best is None:
             rec["status"] = "no_candidate"
             return rec
-        i, A = best
+        i, A, select_obj = best
+        rec["select_obj"] = select_obj
         spec = cands[i]["spec"]
         py, mismatch = self.resolve_py(spec, pys[i])
         rec["spec"] = spec
@@ -392,7 +419,8 @@ class Scorer:
         recs: Dict[int, Dict[str, Any]] = {}
         for w in wids:
             recs[w] = {"wid": w, "status": "scored", "dce": None, "spec": None, "py": None,
-                       "desc": None, "A": None, "B": None, "robust": None}
+                       "desc": None, "A": None, "B": None, "robust": None,
+                       "select_obj": None, "cov_penalty": self.cov_penalty}
         t0 = time.time()
         n = len(wids)
         empty_robust = {"scores": [], "mean": None, "sem": None, "null_mean": None,
@@ -440,9 +468,7 @@ class Scorer:
                 continue
 
             def _proxy(i: int, _cands: List[Dict[str, Any]] = cands) -> float:
-                pr = _cands[i].get("proxy") or {}
-                v = pr.get("score")
-                return -math.inf if v is None else float(v)
+                return self._cand_obj(_cands[i])
 
             order = sorted(keep, key=lambda i: (-_proxy(i), i))
             chosen = order if (exact_top is None or int(exact_top) <= 0) else order[:int(exact_top)]
@@ -472,7 +498,7 @@ class Scorer:
             if p is None:
                 continue
             dce = recs[w]["dce"]
-            best: Optional[Tuple[int, Dict[str, Any]]] = None
+            best: Optional[Tuple[int, Dict[str, Any], float]] = None
             best_score = -math.inf
             for i in p["chosen"]:
                 a = {"rec": _ratio(ce_f[(w, i)] - self.ce0_mean, dce),
@@ -480,13 +506,15 @@ class Scorer:
                      "cov": p["covs"][i]}
                 a["score"] = (None if (a["rec"] is None or a["inv"] is None)
                               else min(a["rec"], 1.0 - a["inv"]))
-                if a["score"] is not None and a["score"] > best_score:
-                    best_score = a["score"]
-                    best = (i, a)
+                obj = self.select_obj(a)
+                if obj > best_score:
+                    best_score = obj
+                    best = (i, a, obj)
             if best is None:
                 recs[w]["status"] = "no_candidate"
                 continue
-            i, A = best
+            i, A, select_obj = best
+            recs[w]["select_obj"] = select_obj
             spec = p["cands"][i]["spec"]
             py, mismatch = self.resolve_py(spec, p["pys"][i])
             recs[w]["spec"] = spec
@@ -738,6 +766,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                          "runs/<model>/scores_<tag>/<shard>.jsonl (never a full shard output)")
     ap.add_argument("--tag", default="pilot",
                     help="output dir suffix with --wids-file: runs/<model>/scores_<tag>")
+    ap.add_argument("--cov-penalty", type=float, default=COVERAGE_PENALTY,
+                    help="select f* among the exactly-scored slice-00 candidates by "
+                         "A.score - MU*A.cov (default 0.5; 0 reproduces the paper's plain "
+                         "argmax); recorded per record as select_obj")
     ap.add_argument("--exact-top", type=int, default=4,
                     help="exactly score the top-N candidates by proxy score (0 = every gated "
                          "candidate, i.e. identical to score_weight)")
@@ -763,7 +795,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                  if args.candidates_dir else [runs / "candidates"])
     if args.from_specs:
         scorer = Scorer(args.model, device=args.device, batch=args.batch, runs_dir=args.runs,
-                        verbose=not args.quiet)
+                        verbose=not args.quiet, cov_penalty=args.cov_penalty)
         out = Path(args.out) if args.out else runs / "scores" / "from_specs.jsonl"
         run_from_specs(scorer, Path(args.from_specs), out, gate=args.gate,
                        robust=not args.no_robust)
@@ -781,7 +813,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if not d.is_dir():
                 print(f"[score] warning: candidates dir {d} does not exist", file=sys.stderr)
         scorer = Scorer(args.model, device=args.device, batch=args.batch, runs_dir=args.runs,
-                        verbose=not args.quiet)
+                        verbose=not args.quiet, cov_penalty=args.cov_penalty)
         run_wids(scorer, wids, out_dir, cand_dirs, shards=shards, gate=True,
                  robust=not args.no_robust, exact_top=args.exact_top, force=args.force)
         return 0
@@ -810,7 +842,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("[score] nothing to do", flush=True)
         return 0
     scorer = Scorer(args.model, device=args.device, batch=args.batch, runs_dir=args.runs,
-                    verbose=not args.quiet)
+                    verbose=not args.quiet, cov_penalty=args.cov_penalty)
     for shard in todo:
         run_shard(scorer, shard, gate=True, robust=not args.no_robust,
                   exact_top=args.exact_top, cand_dir=cdir, out_dir=runs / "scores")

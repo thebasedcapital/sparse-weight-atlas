@@ -105,10 +105,17 @@ and a VALIDATION half (odd rows): greedy token sets are seeded from the weight's
 positions on the train half (ids occurring ≥ 2 times there) and grown on the TRAIN objective,
 but the emitted ordering is by the VALIDATION objective, and a candidate is dropped when
 another candidate with the same objective fires strictly inside it. The objective is
-`min(clip(rec), 1 − clip(inv), kl_recall) − λ·complexity`, where `rec`/`inv` are the signed
-ratios of the half, `kl_recall` is the fraction of the weight's KL mass (`kl.npy`) inside f,
-and `complexity` counts the distinct decoded token strings the predicate names (a class or a
-window counts 1); λ defaults to 0.01 (`--lambda`). `proxy` therefore reports, in addition to
+`min(clip(rec), 1 − clip(inv), kl_recall) − λ·complexity − μ·cov`, where `rec`/`inv` are the
+signed ratios of the half, `kl_recall` is the fraction of the weight's KL mass (`kl.npy`)
+inside f, and `complexity` counts the distinct decoded token strings the predicate names (a
+class or a window counts 1); λ defaults to 0.01 (`swa-synth --lambda`) and μ to 0.5
+(`swa-synth --cov-penalty`).
+μ prices the fired positions themselves: the first three terms saturate at ~1 for any
+predicate covering the weight's dce/KL mass and `kl_recall` is monotone in coverage, so
+without μ the broadest candidate under the 0.5 cap wins (near-cap `punct_only` windows
+outranked `digit_only` for the paper's neuron-1863 weights). At μ=0.5 a predicate firing on
+40% of the slice must be ~0.2 better than a tight one to win, while a 2.9%-coverage predicate
+pays only 0.015. `proxy` therefore reports, in addition to
 the full-slice fields above, `score_train`, `score_val` (the objective on each half) and
 `kl_recall_val`.
 
@@ -118,8 +125,16 @@ the full-slice fields above, `score_train`, `score_val` (the objective on each h
  "dce": mean ΔCE per position on slice 00, "spec", "py", "desc",
  "A": {"rec","inv","cov","score"},          exact conditional-zero on slice 00 (InterpA)
  "B": {...same on slice 01...},             InterpB
- "robust": {"scores":[10 floats], "mean","sem","null_mean","null_sd","pass": bool}}
+ "robust": {"scores":[10 floats], "mean","sem","null_mean","null_sd","pass": bool},
+ "select_obj": A.score − μ·A.cov of the chosen f*, "cov_penalty": μ}
 ```
+f* selection (OUR deviation from the paper, which takes the plain argmax of `A.score` over its
+candidates): among the exactly-scored slice-00 candidates the scorer takes the argmax of
+`A.score − μ·A.cov`, μ default 0.5 (`swa.score --cov-penalty`); `--cov-penalty 0` reproduces
+the paper's plain argmax. The same μ is the synthesis coverage penalty, so candidate ordering
+and f* choice price coverage identically. Rationale: a broad predicate that restores the
+weight over most of the slice scores almost as well as a tight one on slice 00 while failing
+the coverage-matched null on held-out slices; see `runs/csp_yolo1/exp_slices/`.
 Exact conditional-zero: weight zeroed everywhere, its contribution restored exactly at positions where f holds
 (c_fc[o,j]: add back `W·A[...,j]` to preactivation o at those positions BEFORE any following nonlinearity/top-k;
 c_proj[o,j]: add back `W·H[...,j]` to output o before mlp_out top-k), full suffix of the network re-run.
