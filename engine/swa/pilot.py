@@ -358,12 +358,19 @@ def build_report(model: str, tag: str, seed: Optional[int], n_requested: int,
                         **rates(sel)})
 
     stages = _read_json(pilot_dir(model, tag) / "stages.json").get("stages", {})
+    # Paper Table 1 is a rate over *sampled* weights: flag any sampled wid without a record.
+    wpath = pilot_dir(model, tag) / "wids.npy"
+    sampled = set(np.load(wpath).astype(int).tolist()) if wpath.exists() else set(recs)
+    missing = sorted(sampled - set(recs))
     report = {
         "model": model,
         "tag": tag,
         "seed": seed,
         "n_requested": int(n_requested),
         "n_records": len(rows),
+        "n_sampled": len(sampled),
+        "complete": not missing and len(sampled) == int(n_requested),
+        "missing_wids": missing[:100],
         "exact_top": int(exact_top),
         "scores_dir": str(scores_dir(model, tag)),
         "counts": counts,

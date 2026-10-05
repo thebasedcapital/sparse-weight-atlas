@@ -30,8 +30,8 @@ and packs up to ``--batch`` variants across weights of one layer into each ``abl
 ``A.score - MU * A.cov`` instead of the paper's plain ``A.score`` argmax, and records the
 winning ``select_obj`` (``--cov-penalty 0`` reproduces the plain argmax).  See CONTRACT.md.
 
-``--exact-top N`` (default 4) limits the slice-00 exact evaluation to the top-N candidates by
-proxy score; ``--exact-top 0`` scores every gated candidate and reproduces ``score_weight``.
+``--exact-top N`` limits the slice-00 exact evaluation to the top-N candidates by proxy score;
+the default ``0`` scores every gated candidate (paper Algorithm 1) and reproduces ``score_weight``.
 """
 
 from __future__ import annotations
@@ -403,7 +403,7 @@ class Scorer:
     def score_many(self, wids: Sequence[int],
                    cands_by_wid: Dict[int, List[Dict[str, Any]]],
                    gate: bool = True, want_robust: bool = True,
-                   exact_top: int = 4) -> Dict[int, Dict[str, Any]]:
+                   exact_top: int = 0) -> Dict[int, Dict[str, Any]]:
         """Score many weights with slice-outer loops; returns ``wid -> record``.
 
         Same per-weight schema as :meth:`score_weight`.  Slices are loaded once each
@@ -636,7 +636,7 @@ def load_candidates(path: Path) -> List[Dict[str, Any]]:
 
 
 def run_shard(scorer: Scorer, shard: str, gate: bool = True, robust: bool = True,
-              exact_top: int = 4, cand_dir: Optional[Path] = None,
+              exact_top: int = 0, cand_dir: Optional[Path] = None,
               out_dir: Optional[Path] = None) -> Dict[str, Any]:
     """Score one candidate shard with the slice-outer batch mode."""
     cand_path = (cand_dir or scorer.runs / "candidates") / f"{shard}.jsonl"
@@ -673,7 +673,7 @@ def home_shards(model: str, wids: Sequence[int]) -> Dict[int, str]:
 
 def run_wids(scorer: Scorer, wids: Sequence[int], out_dir: Path, cand_dirs: Sequence[Path],
              shards: Optional[Sequence[str]] = None, gate: bool = True, robust: bool = True,
-             exact_top: int = 4, force: bool = False) -> Dict[str, Any]:
+             exact_top: int = 0, force: bool = False) -> Dict[str, Any]:
     """Score an explicit wid list; write one ``<shard>.jsonl`` per home shard in ``out_dir``.
 
     ``cand_dirs`` is searched in order for ``<shard>.jsonl`` (first hit wins).
@@ -770,7 +770,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     help="select f* among the exactly-scored slice-00 candidates by "
                          "A.score - MU*A.cov (default 0.5; 0 reproduces the paper's plain "
                          "argmax); recorded per record as select_obj")
-    ap.add_argument("--exact-top", type=int, default=4,
+    ap.add_argument("--exact-top", type=int, default=0,
                     help="exactly score the top-N candidates by proxy score (0 = every gated "
                          "candidate, i.e. identical to score_weight)")
     ap.add_argument("--candidates-dir", default=None,

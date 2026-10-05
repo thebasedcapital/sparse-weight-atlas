@@ -18,6 +18,7 @@ Writes (per CONTRACT "Site data"):
     site/data/models.json               (manifest of available models, upserted)
 """
 import argparse
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 
@@ -221,6 +222,11 @@ def export_model(model: str, runs: Path, data: Path, out: Path,
     interp_b = interp_rate(b_recs)
     summary = {
         "model": model,
+        "provenance": {
+            "kind": "pipeline_export",
+            "scores_dir": str((scores_dir if scores_dir is not None else runs_dir / "scores").resolve()),
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+        },
         "counts": {
             "total": W, "scored": scored,
             "noise_floor": counts["noise_floor"],
