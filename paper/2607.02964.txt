@@ -1,0 +1,883 @@
+                                          Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+
+                                                                                 Arnau Marin-Llobet 1 Stefan Heimersheim
+
+
+                                                                   Abstract                                    on one distribution, but the same weight can participate in
+                                               A central goal of mechanistic interpretability is               many circuits, contributing differently to each (Elhage et al.,
+                                               to understand how neural networks work and                      2022b; Janiak et al., 2023).
+                                               what each individual component does. Domi-                      As an alternative, we ask whether we can understand what
+                                               nant circuit-finding approaches focus on a specific             an individual weight does on the full training distribution.
+
+
+
+
+arXiv:2607.02964v1 [cs.LG] 3 Jul 2026
+                                               behavior and reverse-engineer the role of compo-                In standard dense models, this question is difficult to in-
+                                               nents on the associated sub-distribution. However,              vestigate due to superposition: the weight basis is not an
+                                               past work has shown that components can have                    interpretable basis of the network’s parameters (Gurnee
+                                               different functions that are active on different sub-           et al., 2023; Bricken et al., 2023; Frankle & Carbin, 2018),
+                                               sets of the input distribution. In this work we ask             with rare exceptions (Yu et al., 2024). Recent work on
+                                               whether a single weight can be understood glob-                 weight-sparse transformers (Gao et al., 2025) addresses this
+                                               ally across the full training distribution by char-             by training models in which most weights are forced to zero,
+                                               acterizing when it matters (the inputs on which                 leaving a small number of surviving weights that organize
+                                               ablating it changes the model’s predictions). We                into compact, readable circuits while the model retains some
+                                               introduce an automated LLM pipeline that writes                 language modeling capability.
+                                               a short, human-readable description of when a
+                                               weight matters and verifies it on held-out text,                This makes weight-sparse transformers a natural testbed for
+                                               crediting a weight only if its description general-             our question. The zero weights are trivially interpretable
+                                               izes. Across two sparse and two dense transform-                since they contribute nothing to the model’s behavior; the
+                                               ers, the fraction of weights that are interpretable             open question is whether the surviving nonzero weights are
+                                               (in this sense) is higher in sparse transformers                interpretable too. These models let us develop weight-based
+                                               than in dense ones, a gap that widens once unreli-              interpretability pipelines today; once the field identifies an
+                                               able descriptions are discarded. Our results show               interpretable basis in parameter space for dense models (e.g.
+                                               that a meaningful fraction of a sparse transformer              (Olah et al., 2025; Braun et al., 2025)), we hope to apply
+                                               model’s weights can be interpreted: 12 to 31%                   these pipelines to frontier language models.
+                                               of weights have a single short description that                 What would it mean to find that a weight is interpretable?
+                                               identifies what the weight is used for*                         We make a specific choice: we try to explain when a weight
+                                                                                                               matters; that is, the inputs on which it has a measurable ef-
+                                                                                                               fect on the model’s output. This does not capture everything
+                                        1. Introduction                                                        one might want from a full understanding of a weight, but it
+                                                                                                               is concrete, testable, and a natural starting point. For each
+                                        While large language models have rapidly increased in ca-
+                                                                                                               weight we propose a short, human-readable explanation of
+                                        pability, we are still far from understanding how they work.
+                                                                                                               when it should be active, and we evaluate the explanation
+                                        Mechanistic interpretability aims to reverse-engineer neu-
+                                                                                                               by checking whether it holds on data the explanation was
+                                        ral networks into the algorithms they implement, and the
+                                                                                                               not generated from.
+                                        dominant approach does so by isolating circuits responsible
+                                        for specific behaviors (Ferrando et al., 2024; Olah et al.,            Doing this at scale is hard for two related reasons. The first
+                                        2020; Wang et al., 2022; Olsson et al., 2022). A circuit               is automation: a sparse transformer has tens of thousands
+                                        tells us what a set of weights does in service of one task             of nonzero weights, and any useful test must run across
+                                           1                                                                   all of them without human inspection of each one. The
+                                             School of Engineering and Applied Sciences, Harvard Univer-
+                                        sity, Cambridge, MA 02138. Correspondence to: Arnau Marin-             second is measurement: a useful score must capture two
+                                        Llobet <amarinllobet@seas.harvard.edu>.                                properties at once. When the explanation claims a weight
+                                                                                                               is active, ablating it should reduce model performance on
+                                        Preprint.                                                              those inputs; when the explanation claims the weight is
+                                           * Project website: weightpedia.org/individual-parameters-in-
+                                                                                                               inactive, ablating it should leave performance unchanged.
+                                        sparse-transformers/.
+
+                                                                                                           1
+                           Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+
+
+
+Figure 1. Per-weight causal impact distribution on a held-out distribution. Gray bars: total nonzero weights per |∆CE| bin. Colored bars
+within each gray bar show the fraction of weights in that bin that pass our interpretability test. The right-most column collects parameters
+that are exactly zero. Error bars are ±1 SEM. Pooled interpretability scores across all nonzero weights: Gao et al. (2025) 15%, Drori
+(2026) sparse 9.6%, Drori (2026) dense 1.5%, Pythia-70m 0.4%.
+
+
+Without the first, the explanation does not account for the                   is achievable in dense controls, and the gap survives
+weight’s effect; without the second, the explanation passes                   held-out validation.
+trivially by being too broad.
+In this paper we introduce an automated, LLM-based                       2. Related work
+pipeline that addresses both challenges. For each nonzero
+weight we ablate it and measure the resulting Kullback–                  Circuit decomposition from weight matrices. A line
+Leibler (KL) divergence and cross-entropy (CE) shift on                  of work going back to the original Circuits Thread (Olah
+a held-out corpus, prompt an LLM to generate candidate                   et al., 2020; Elhage et al., 2021) and continued in recent
+Python functions describing the token contexts most af-                  bilinear-MLP analyses (Pearce et al., 2024) examines weight
+fected by the ablation, and score each candidate, taking the             matrices to extract circuits responsible for specific behav-
+best of n candidates as the explanation. We test the pipeline            iors. The unit of analysis is the circuit; weights enter as
+on a weight-sparse coding transformer (Gao et al., 2025),                ingredients of larger structures rather than as objects of
+a sparse-and-dense SimpleStories pair (Drori, 2026), and                 explanation. Approaches in this style identify a behavior,
+Pythia-70m (Biderman et al., 2023) as a dense pretrained                 isolate the subnetwork that implements it, and read off the
+control. We find that the pipeline assigns interpretable pred-           weight matrices that compose it. Recent work shows that
+icates to up to 20–30% of nonzero weights in the sparse                  this behavior-first localization extends even to broad capa-
+models that have a high CE impact, compared to 0–3% in                   bilities in dense LLMs: harmful generation, for instance,
+the dense baselines when re-evaluated on a held-out corpus.              depends on a compact, prunable set of weights (Orgad et al.,
+Combined with the trivially interpretable zeros, this means              2026). All of these approaches are powerful when the target
+a large fraction of parameters in weight-sparse transformers             behavior is known in advance, but none produces a global
+admit per-weight explanations, while the same is not true of             account of what the model contains. Our approach inverts
+dense models. Our contributions are as follows.                          the dependency: we ask what each individual weight does
+                                                                         without first committing to a behavior, which lets us charac-
+   • A framework for per-weight interpretability. We                     terize weights that participate in no named circuit at all, at a
+     define what it means for a single weight to be inter-               scale that hand-curated circuit extraction cannot reach.
+     pretable in terms of two complementary checks. Recov-
+     ery measures how much of the weight’s ablation effect               Interpretable-by-design and sparse-weight transformers.
+     a candidate explanation accounts for. Inverse mea-                  Several lines of work have produced transformers whose
+     sures the effect recovered by the explanation’s nega-               weights admit direct interpretation. Tracr (Lindner et al.,
+     tion, which guards against explanations that succeed                2023) compiles models from a high-level program (RASP;
+     only by being too broad.                                            Weiss et al., 2021), so the interpretability of the resulting
+                                                                         weights is a property of the compilation pipeline rather than
+   • An automated LLM pipeline. Given a weight, the
+                                                                         something the model acquired from a training objective.
+     pipeline profiles its ablation effect across a corpus and
+                                                                         A second line of work modifies the training recipe itself to
+     returns a scored explanation of when the weight mat-
+                                                                         encourage interpretability, by introducing an activation func-
+     ters, with no manual inspection required.
+                                                                         tion (the Softmax Linear Unit) that increases the fraction of
+   • Empirical evidence that a substantial fraction of                   MLP neurons responding to a single human-interpretable
+     nonzero parameters in weight-sparse transform-                      concept without sacrificing language modeling performance
+     ers are individually interpretable, far above what                  (Elhage et al., 2022a). In our setting, Gao et al. (2025)
+
+                                                                     2
+                           Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+
+
+
+Figure 2. Per-weight interpretability pipeline. Given a target weight Wi,j in an MLP layer, we run both the original model and an ablated
+copy on a corpus, measure the per-token KL divergence between them, and extract the token contexts that account for the top 90% of
+cumulative KL. These contexts are passed to an LLM, which proposes candidate predicates describing them; the highest-scoring candidate
+becomes the weight’s interpretation.
+
+
+train transformers in which most weights are forced to zero,           weight gated on or off according to the predicate, and keep
+and show that the surviving weights organize into com-                 the best one. We describe each stage below, give the full
+pact, readable circuits for specific behaviors. Drori (2026)           algorithm in Algorithm 1, and end with the experimental
+extends this with the SimpleStories sparse-and-dense pair,             setup.
+which couples a sparse reasoning core to a dense output
+head and recovers more of the loss-capability frontier than            3.1. Computing single-weight importance location
+fully sparse training. Our contribution is complementary;
+the sparse models are our testbeds (Gao et al., 2025; Drori,           To ask whether a single scalar weight w in an MLP layer
+2026). Where prior work establishes that sparse training pro-          is interpretable, we first need to know whether and where
+duces interpretable circuits, we ask whether the individual            it matters. We do this by ablation: we run the model twice
+parameters of these models admit per-weight explanations               on the same corpus, once normally and once with w set to
+without first choosing a behavior.                                     zero, and compare the two next-token predictions at every
+                                                                       position. The per-position disagreement is the KL diver-
+Parameter decomposition. A second line of work treats                  gence between the original and ablated model, which we
+parameters as the unit of analysis but decomposes them                 denote KLp . The positions with the largest KLp are the
+into a learned basis of components rather than interpreting            ones the weight influences most, and the cumulative dis-
+the raw entries. APD (Braun et al., 2025), SPD (Bushnaq                tribution over KLp tells us how concentrated the weight’s
+et al., 2025), and L3D (Chrisman et al., 2025) all follow              effect is. We summarize a weight’s overall importance by
+this strategy. The motivation is that decomposed compo-                its cross-entropy impact ∆CE, the difference between the
+nents may correspond to recognizable functions even when               corpus cross-entropy of the ablated model and that of the
+individual weights do not, which our results confirm is the            original. Figures 3, 4, 8 and 9, show example weights pro-
+case for dense models. We take a different approach. In                cessed this way, with their KL distributions and the token
+sparse models, the raw weights are already a candidate ba-             they most affect.
+sis for interpretation, and no decomposition step is needed.
+Working with the parameters as trained avoids the question             3.2. Generating candidate predicates
+of whether a learned decomposition reflects the model’s                Given the ranked positions from §3.1, we want a short,
+computation or the optimization pressure of the decompo-               human-readable description of what those positions have
+sition objective. It also yields per-parameter rather than             in common. We obtain one automatically by selecting the
+per-component answers, which is the relevant unit when the             positions accounting for the top 90% of cumulative KL,
+goal is to identify or edit specific parts of the model.               using a small window of surrounding tokens around each,
+                                                                       and passing the resulting set of contexts to an LLM. The
+3. Methods                                                             LLM is prompted to return a Python function of the form
+                                                                       f(tokens, pos) -> bool together with a one-line
+Our pipeline takes a single nonzero weight as input and                natural-language description of what it detects.
+returns a Python function that describes when the weight is
+active, together with quantitative scores measuring how well           In practice the LLM produces predicates ranging
+it explains the weight’s effect on the model. The pipeline             from literal token-set membership (tokens[pos]
+has three stages, summarized in Figure 2: (i) compute the              in {"200", "201", "202", ...}) to multi-
+weight importance location by ablating it and measuring                token context tests (tokens[pos-1] == ’"’ and
+the per-position KL divergence between the original and                tokens[pos].isalpha()). The prompt asks for
+ablated models; (ii) prompt an LLM to generate candidate               coverage over the affected contexts rather than elegance,
+predicates from the most-affected token contexts; and (iii)            and we do not filter or edit the returned code, where we
+score each candidate by running the original model with the            sometimes find minor hallucinations. The context window
+
+                                                                   3
+                            Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+
+
+
+Figure 3. An interpretable weight from Gao et al. (2025) sparse code transformer. Left: distribution of per-token KL divergence over the
+corpus when this weight is ablated, with the cumulative KL shown in yellow. Right: three token contexts drawn from the top of the KL
+distribution. Each panel shows the surrounding text, the position of the affected token, and the largest probability shifts (red: probabilities
+decreased by ablation; green: increased).
+
+
+
+
+Figure 4. An interpretable weight from Drori (2026). The same display as Figure 3; the affected tokens cluster around speech-verb
+contexts (“called”,“shouted”, “voice”, etc.).
+
+
+around each top position is ±8 tokens. We sample N                        w everywhere except where f does not hold. We score the
+candidate predicates and choose the best candidate based on               predicate by its recovery and inverse:
+the scores detailed in §3.3. We sweep N in Appendix A.4
+and find our headline numbers saturate around N = 100,                                                            CEf − CE0
+and we select it as default candidate budget.                                          recovery(f ) = 1 −                                  (1)
+                                                                                                                    ∆CE
+
+3.3. Scoring a candidate predicate                                                                              CE¬f − CE0
+                                                                                       inverse(f ) = 1 −                   .               (2)
+Given a candidate predicate f for weight w, we want to                                                            ∆CE
+know whether f actually describes what the weight does.                   A recovery of 1 means restoring the weight at the predicted
+The test is a conditional-zero ablation. We globally ablate               positions fully reproduces the original model, a recovery of
+w throughout the corpus, then restore its per-position con-               0 means restoring it there has no effect at all, and a recovery
+tribution only at the positions indicated by f , and measure              > 1 can occur on weights with very small ∆CE where
+the resulting cross-entropy. Concretely, write CE0 for the                the conditional-zero model happens to perform marginally
+cross-entropy of the unmodified model, CE∅ for the model                  better than the unmodified one — we treat such cases as
+with w ablated everywhere, and ∆CE = CE∅ − CE0 for                        numerically unreliable and flag them with an asterisk in
+the ablation effect. Let CEf be the cross-entropy of the                  figures.
+conditional-zero model that ablates w everywhere except
+where f holds, and CE¬f the symmetric model that ablates                  Recovery and inverse alone are not enough. A predicate
+                                                                          that holds at almost every position trivially recovers most
+
+                                                                      4
+                          Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+of the ablation effect; in the extreme, the predicate f ≡              text that produced it, this is what we call InterpB . Because
+True achieves recovery = 1 and inverse = 0 while saying                a single held-out slice gives just one score per weight (and
+nothing about the weight. We rule these out with a coverage            that score depends on which text we happened to draw) we
+gate. Writing p(f ) for the coverage of f —the fraction of             further use the other remaining K=10 separate held-out
+corpus positions where it fires—we keep a candidate only if            slices. Each weight then has ten held-out scores instead of
+it fires on at least one position but no more than half of them,       one, and we summarise them by their average and by how
+i.e. 0 < p(f ) ≤ c with coverage cap c = 0.5. Among the                much they move from slice to slice (the standard error), i.e.
+surviving candidates we summarize recovery and inverse by              how noisy the score is. This gives us two measures that we
+the interpretability score,                                            rely on throughout (§4.2). The robust rate counts a weight
+                                                                      as interpretable only when we are confident its average
+    score(f ) = min recovery(f ), 1 − inverse(f ) , (3)                held-out score clears the bar, not just on a lucky slice. The
+                                                                       reliability says how much of the spread in scores across
+and select the highest-scoring candidate f ∗ among the N re-
+                                                                       a model’s weights reflects a real property of the weights,
+turned by the LLM as the weight’s interpretation. A weight
+                                                                       rather than noise from which text we happened to test on.
+is called interpretable at threshold T if its best predicate
+                                                                       Both are stricter than a single check, and both test the one
+clears the score threshold and passes the coverage gate,
+                                                                       thing we care about: whether a predicate works off the
+         score(f ∗ ) ≥ T         and      p(f ∗ ) ≤ c                  corpus that produced it.
+
+(equivalently recovery(f ∗ ) ≥ T and inverse(f ∗ ) ≤ 1 − T ).          4. Results
+We use T = 0.75 and c = 0.5 throughout the paper and
+report sensitivity to T in Appendix A.5. Algorithm 1 gives             Table 1. Pooled per-weight interpretability rates. Each entry is the
+the full pipeline.                                                     percentage of a model’s sampled nonzero weights that pass the test
+                                                                       (±1 SEM). InterpA : the weight’s predicate is scored on the same
+                                                                       text it was written from (in-sample). InterpB : the same predicate,
+3.4. Models and corpora                                                scored instead on separate held-out text. Robust: the predicate is
+                                                                       re-scored on K=10 held-out slices, and the weight counts only if
+We evaluate three training regimes. The weight-sparse code
+                                                                       its average held-out score is both clearly interpretable and reliably
+transformer of Gao et al. (2025) is trained at ∼99% weight             above a “not-interpretable” baseline.
+sparsity on Python code. The SimpleStories sparse-and-
+dense pair of Drori (2026) consists of a sparse model trained                  Model                   InterpA       InterpB       Robust
+
+at ∼98% sparsity on the SimpleStories corpus and a dense                       Gao et al. (2025)      37.3 ± 3.9%   35.3 ± 3.9%   15.0 ± 1.7%
+                                                                               Drori (2026), sparse   21.4 ± 1.5%   17.2 ± 1.4%    9.6 ± 1.1%
+counterpart with the same architecture but no sparsity con-                    Drori (2026), dense    13.2 ± 1.4%    9.0 ± 1.2%    1.5 ± 0.6%
+                                                                               Pythia-70m             12.0 ± 0.9%   5.0 ± 0.6%    0.4 ± 0.3%
+straint. Pythia-70m (Biderman et al., 2023) serves as a
+dense pretrained control, trained on The Pile (Gao et al.,
+2020). For each model we evaluate weights on a corpus that
+approximates its training distribution; see Appendix A.1               4.1. Sparse models are significantly more interpretable
+for details. For each model we sample nonzero weights                       than comparable dense models
+uniformly across MLP layers, and report per-figure sample              On a per-weight basis, the sparse models are far more inter-
+sizes in the corresponding captions. Unless stated otherwise,          pretable than dense models of comparable size. Throughout
+the auto-interp LLM A is Gemini 3 Flash, with the candi-               we summarise a model by its robust rate: the fraction of
+date budget set as in §3.2. We replicate headline results with         weights whose interpretation holds up on held-out text, cred-
+Claude Sonnet 4.5, GPT-5, and GPT-4o in Appendix A.5.                  ited only when a weight’s average score across the K=10
+                                                                       held-out slices reliably clears the interpretability bar (§3.5).
+3.5. Held-out evaluation                                               At the canonical settings (T = 0.75, coverage cap c = 0.5),
+                                                                       the two sparse models sit far above the dense controls —
+The predicate generation and best-of-n choice both use the
+                                                                       roughly 15% and 10% of their non-zero weights are ro-
+same dataset of text, so it might just describe surface patterns
+                                                                       bustly interpretable, against about 1% for the dense model
+of that text rather than the weight itself. To rule this out, we
+                                                                       and essentially none for the pretrained dense control (Ta-
+always pick a predicate on one piece of text and test it on
+                                                                       ble 1). This ordering is not an artifact of one threshold or one
+different text the LLM never saw. Concretely, we take one
+                                                                       judge: it holds within every impact bin below and survives
+corpus and cut it into 12 non-overlapping slices from the
+                                                                       every robustness check we run (Appendices A.4–A.5).
+same distribution. On the first slice we generate candidate
+predicates and keep the best one, f ∗ (§3.3). We then re-              Where do the interpretable weights sit? Binning each
+score that same f ∗ on the remaining held-out slices, which            model’s weights by the size of their causal effect |∆CE|
+the LLM never saw. This is the whole test: a predicate is              (Figure 1) shows two things. The sparse models place
+only credited if it keeps working on fresh text, not just on the       a real population of weights in the high-impact range
+
+                                                                   5
+                           Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+
+
+
+Figure 5. Robust interpretability on held-out data. Each weight is re-scored on K=10 disjoint held-out slices: the vertical axis is its
+mean score s̄ = min(rec, 1 − inv) and the horizontal axis is how much that score varies between slices (its standard error). Color is the
+log density of weights, showing the robustly interpretable weights above the interpretability bar (blue, s̄ ≥ 0.75) and outside the “not
+interpretable” ±2σ null cone (dashed). The percentage is the robust rate per model.
+
+
+(|∆CE| ≥ 10−4 ), and that is exactly where interpretabil-
+ity is densest — roughly a quarter of their high-impact
+weights are robustly interpretable. The dense models barely
+populate that range at all, and what little they place there
+generalises poorly; the pretrained control reaches no high-
+impact weights in our sample. The right-most column of
+Figure 1 (= 0) counts parameters that are exactly zero by
+construction, and is excluded from all rates.
+
+What the |∆CE| range means. Per-weight ablation ef-
+fects span four orders of magnitude in all four models, from
+above 10−3 at the high end to below 10−6 at the low end.
+The lowest bin (< 10−6 ) is at the noise floor of the cross-
+entropy measurement and contributes essentially nothing to
+the model’s loss; weights there can score high on a predicate
+by accident, since any predicate’s effect on a near-zero ∆CE
+is dominated by numerical noise rather than the weight’s
+actual function. The coverage gate (p ≤ c = 0.5 in Algo-               Figure 6. Example weights and their LLM-generated predicates.
+rithm 1) rules out the most flagrant version of this failure           Each row gives a weight’s identifier and predicate code, with a high-
+mode — predicates that fire almost everywhere and “re-                 KL prompt comparing where the weight fires (weight ablation)
+cover” the ablation by trivially restoring the weight at most          against where the predicate evaluates true (regex ablation). Rows
+positions — but the noise floor remains the reason the lowest          show, top to bottom, a Gao-sparse, a Drori-dense, and a Pythia-
+                                                                       70m weight.
+CE bin is not where the interpretable population lives. The
+higher-impact bins are where sparse and dense models part
+ways: a sparse model places significant probability mass
+there and most of it is interpretable; a dense model places            move it; if it reflects the corpus, it should change.
+little mass there and what it does place generalises worse
+off-corpus.                                                            Re-scoring every weight on K=10 disjoint held-out splits
+                                                                       separates the two. The spread of scores across a model’s
+                                                                       weights mixes genuine differences between weights with
+4.2. Sparse-model scores are properties of the weight,
+                                                                       sample-to-sample wobble in each weight’s own score; sub-
+     not the corpus
+                                                                       tracting the wobble leaves the part that survives resampling,
+The rates above rest on held-out text, but we can ask a                whose share of the total we call the reliability (Figure 13).
+sharper question of the same data: not how many weights                It falls steeply from the sparse models to the dense ones: on
+pass, but how much each weight’s score depends on which                the sparse models almost all of the spread is real (around
+held-out sample it happened to be measured on. If a score              85–90%), so a weight’s score is essentially a stable property
+reflects the weight, redrawing the sample should barely                of that weight; on the pretrained dense control barely half
+
+                                                                   6
+                           Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+survives (47%), meaning most of what looks interpretable                   Threshold sensitivity. The interpretable rate depends on
+there is decided by which split happened to be drawn.                      the predicate-pass threshold T used to convert per-weight
+                                                                           scores into a binary interpretable/not-interpretable judgment.
+This instability does more than add noise — it inflates the
+                                                                           As T varies, absolute rates shift monotonically, but the
+dense models’ apparent interpretability, and removing it
+                                                                           cross-model ordering (Gao > Drori sparse > Drori dense
+makes them collapse. Our headline robust rate keeps a
+                                                                           > Pythia) is preserved across the full sweep we tested (Ap-
+weight only if its held-out score clears the bar and is confi-
+                                                                           pendix A.5).
+dently above a “not-interpretable” baseline, not merely on
+a lucky split (Figure 5). Under this test the sparse models                LLM choice and candidate budget. The choice of LLM
+retain a sizeable interpretable population while the dense                 and the number of LLM calls per weight N are hyperpa-
+controls fall to near zero (Table 1): a single held-out check              rameters of our pipeline rather than properties of the un-
+had credited the dense models with a few percent, but almost               derlying weights. We re-run the full evaluation under four
+none of it survives resampling.                                            different LLMs (Gemini 3 Flash, Claude Sonnet 4.5, GPT-
+                                                                           5, GPT-4o): absolute rates at T = 0.75 differ by up to
+Every held-out measure tells the same story (Table 1): the
+                                                                           ∼30 percentage points, with stronger LLMs higher, but the
+held-out pass rate, the reliability, and the robust rate all
+                                                                           rate-vs-T shape and the cross-model rank order are pre-
+give the same ordering, and correcting for sampling noise
+                                                                           served under each LLM (Appendix A.5). Rates also rise
+widens the sparse–dense gap rather than narrowing it. The
+                                                                           with N and saturate by N ≈ 100 on the sparse models,
+sparse models carry interpretability that belongs to their
+                                                                           while the dense baselines stay low across the entire sweep
+weights; the dense models’ belongs largely to the corpus it
+                                                                           N ∈ {1, 3, 5, 10, 20, 100, 150} (Appendix A.4). The cross-
+was measured on.
+                                                                           model ordering Gao > Drori sparse > Drori dense > Pythia
+                                                                           therefore holds under each LLM and under each candidate
+4.3. What the predicates look like.                                        budget.
+The LLM-generated predicates cluster into a few structural
+patterns across all four models. The most common form is                   5. Case Studies
+a single-token lookup: “is the focus token a digit,” “is it one
+of {th, ode, b},” “is it a mid-word lowercase fragment.”                   To ground the rates of §4 in concrete examples, we work
+A smaller fraction conditions on the immediate neighbour:                  through one MLP neuron of the Gao et al. (2025) sparse
+“previous word ends in -ed,” “next token is an inflectional                code transformer. The neuron fires predominantly on nu-
+suffix.”† Even the longer predicates rarely reach beyond two               meric tokens at the activation level; applied to its nine
+or three adjacent tokens, and we do not observe predicates                 nonzero input weights, our pipeline assigns a separately-
+that maintain state across a prompt (e.g. “inside an open                  interpretable predicate to each, and the predicates cluster
+string literal”). The pattern is consistent with weights that              into multiple digit-count categories — single-digit, two-
+act locally in token-context, even when the higher-level                   digit, three-digit, generic and other gates that together com-
+circuits they participate in are not. Figure 6 shows three                 pose the activation-level “detects digits” label (Figure 7).
+representative weights (one Gao sparse, one Drori dense,                   The full decomposition is in Appendix A.6, and two fur-
+one Pythia) with the predicate code and a few high-KL                      ther worked examples are in Appendices A.7 (string-closing
+prompts where the weight fires; predicate length and further               context dependence) and A.8 (a Drori-sparse speech-verb
+class statistics across all four models are in Appendix A.2.               neuron decomposed into five functional sub-roles).
+
+4.4. Threshold sensitivity and pipeline ablations                          6. Conclusion
+The interpretable rates reported above depend on a thresh-                 We find that a substantial fraction of nonzero weights in
+old T that is inherent to the metric and on two pipeline                   weight-sparse transformers admit individually interpretable
+hyperparameters — the choice of LLM and the number of                      explanations of when they are active, whereas the corre-
+candidate predicates N generated per weight. We treat these                sponding fraction in dense models is nearly zero. The cross-
+separately: T is a core property of the interpretability mea-              model ordering is preserved across thresholds, candidate
+sure, whereas the LLM and N are knobs of our evaluation                    budgets, and choice of auto-interp LLM. The interpretable
+pipeline that we ablate to confirm the cross-model ordering                rate also seems to depend on a weight’s causal impact.
+does not depend on them.                                                   Weights with larger ablation effects are more likely to admit
+    †
+      These phrases are the auto-interp LLM’s own one-line de-
+                                                                           explanations our pipeline can recover, while weights with
+scriptions; each is paired with an executable Python predicate (e.g.       very small ablation effects are interpreted less reliably, sug-
+tokens[pos] in {"ed","ing","s","es","ly"} for                              gesting that low-impact weights either contribute too little
+the inflectional-suffix example.                                           signal for the auto-interp LLM to characterize or play roles
+
+
+                                                                       7
+                           Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+
+
+
+Figure 7. A neuron in the Gao et al. (2025) model that fires on numeric tokens. Each of the neuron’s nine nonzero input weights is labelled
+with the LLM-generated interpretability score. Note: * means that |∆CE| < 0.00001.
+
+
+that the current predicate language cannot express. Three               simply cannot write down. Finally, our held-out corpus is
+case studies show what the aggregate rates correspond to                drawn from the same pretraining distribution as the evalua-
+in practice. We find per-digit-count gates inside a digit-              tion corpus; whether these descriptions survive distribution
+detector neuron, look-back-dependent functions inside the               shift is a separate question out of scope in this paper.
+string-closing circuit, and a speech-verb neuron that de-
+composes at the weight level into five parallel functional
+roles (speech-verb activators, mental-verb suppressors, a
+modal suppressor, punctuation gates, and specific-token                 Future work. Three extensions follow naturally. First,
+gates). Combined with the trivial interpretability of the zero          the function language could be extended beyond token-
+weights, the great majority of parameters in these sparse               local tests (for instance to predicates that reference parser
+models admit per-weight explanations, while the same is                 state, BPE-segmentation features, or the outputs of learned
+not true of dense models.                                               probes) which should recover weights whose domain of
+                                                                        action the current language cannot describe. Second, the
+Limitations. Our measurements tell us when a weight is                  fraction of robustly interpretable weights is a quantity one
+active, not what it computes once active. A function that               can train against, prune by, or use to compare architectures,
+correctly predicts the inputs on which a weight matters is              in the role that token-level perplexity plays for capability.
+informative, but it is not a complete account of the weight’s           Third, applying the same method to larger sparse-trained
+role in the model. The numbers we report should be read as              transformers (ideally ones with non-trivial multi-step be-
+evidence that weights in sparse transformers are individually           havior) will reveal whether per-weight interpretability is
+identifiable functional units, not as a complete characteriza-          a property of these particular small models or of sparsity
+tion of what each one does. Another limitation is that our              training itself.
+numbers are a lower bound on what the method could in
+principle find. Our function language is Python predicates              7. Acknowledgements
+over token context, which cannot express semantic features
+(e.g., whether a span refers to a person) and cannot easily             This work was funded by Pivotal Research. Arnau Marin-
+express features that span multiple tokens or require state             Llobet is supported by Coefficient Giving and the RCC-
+across the prompt. A weight whose role depends on such                  Harvard Fellowship. Thanks to Francisco Ferreira da Silva,
+structure would be filed as not interpretable here, even if             Zheng (Zack) Hui, Reilly Haskins, Motahareh Sohrabi,
+it has a clean account of when it matters that our language             Yonatan Belinkov and Demba Ba for helpful discussions.
+
+                                                                    8
+                        Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+References                                                          Elhage, N., Hume, T., Olsson, C., Schiefer, N., Henighan,
+                                                                      T., Kravec, S., Hatfield-Dodds, Z., Lasenby, R., Drain,
+Biderman, S., Schoelkopf, H., Anthony, Q. G., Bradley,
+                                                                      D., Chen, C., et al. Toy models of superposition. arXiv
+  H., O’Brien, K., Hallahan, E., Khan, M. A., Purohit,
+                                                                      preprint arXiv:2209.10652, 2022b.
+  S., Prashanth, U. S., Raff, E., et al. Pythia: A suite
+  for analyzing large language models across training and           Ferrando, J., Sarti, G., Bisazza, A., and Costa-Jussà, M. R.
+  scaling. In International conference on machine learning,           A primer on the inner workings of transformer-based lan-
+  pp. 2397–2430. PMLR, 2023.                                          guage models. arXiv preprint arXiv:2405.00208, 2024.
+Braun, D., Bushnaq, L., Heimersheim, S., Mendel,
+                                                                    Frankle, J. and Carbin, M. The lottery ticket hypothesis:
+  J., and Sharkey, L.     Interpretability in parameter
+                                                                      Finding sparse, trainable neural networks. arXiv preprint
+  space: Minimizing mechanistic description length with
+                                                                      arXiv:1803.03635, 2018.
+  attribution-based parameter decomposition.      arXiv
+  preprint arXiv:2501.14926, 2025.                                  Gao, L., Biderman, S., Black, S., Golding, L., Hoppe, T.,
+Bricken, T., Templeton, A., Batson, J., Chen, B., Jermyn, A.,         Foster, C., Phang, J., He, H., Thite, A., Nabeshima, N.,
+  Conerly, T., Turner, N., Anil, C., Denison, C., Askell, A.,         et al. The pile: An 800gb dataset of diverse text for
+  Lasenby, R., Wu, Y., Kravec, S., Schiefer, N., Maxwell,             language modeling. arXiv preprint arXiv:2101.00027,
+  T., Joseph, N., Hatfield-Dodds, Z., Tamkin, A., Nguyen,             2020.
+  K., McLean, B., Burke, J. E., Hume, T., Carter, S.,
+                                                                    Gao, L., Rajaram, A., Coxon, J., Govande, S. V., Baker,
+  Henighan, T., and Olah, C. Towards monosemanticity:
+                                                                      B., and Mossing, D. Weight-sparse transformers have
+  Decomposing language models with dictionary learning.
+                                                                      interpretable circuits. arXiv preprint arXiv:2511.13653,
+  Transformer Circuits Thread, 2023. https://transformer-
+                                                                      2025.
+  circuits.pub/2023/monosemantic-features/index.html.
+Bushnaq, L., Braun, D., and Sharkey, L. Stochastic param-           Gurnee, W., Nanda, N., Pauly, M., Harvey, K., Troit-
+  eter decomposition. arXiv preprint arXiv:2506.20790,                skii, D., and Bertsimas, D. Finding neurons in a
+  2025.                                                               haystack: Case studies with sparse probing. arXiv
+                                                                      preprint arXiv:2305.01610, 2023.
+Chrisman, B., Bushnaq, L., and Sharkey, L. Identifying
+  sparsely active circuits through local loss landscape de-         Janiak, J., Mathwin, C., and Heimersheim, S. Polysemantic
+  composition. arXiv preprint arXiv:2504.00194, 2025.                 attention head in a 4-layer transformer. https://www.alig
+                                                                      nmentforum.org/posts/nuJFTS5iiJKT5G5yh/polyseman
+Drori, J. Weight-sparse circuits may be interpretable yet             tic-attention-head-in-a-4-layer-transformer, 2023.
+  unfaithful. https://www.lesswrong.com/posts/sHpZZn
+  RDLg7ccX9aF/weight-sparse-circuits-may-be-interpr                 Lindner, D., Kramár, J., Farquhar, S., Rahtz, M., McGrath,
+  etable-yet-unfaithful, 2026.                                        T., and Mikulik, V. Tracr: Compiled transformers as a
+                                                                      laboratory for interpretability. Advances in Neural Infor-
+Elhage, N., Nanda, N., Olsson, C., Henighan, T., Joseph,
+                                                                      mation Processing Systems, 36:37876–37899, 2023.
+  N., Mann, B., Askell, A., Bai, Y., Chen, A., Conerly,
+  T., DasSarma, N., Drain, D., Ganguli, D., Hatfield-               Olah, C., Cammarata, N., Schubert, L., Goh, G., Petrov,
+  Dodds, Z., Hernandez, D., Jones, A., Kernion, J., Lovitt,           M., and Carter, S. Zoom in: An introduction to circuits.
+  L., Ndousse, K., Amodei, D., Brown, T., Clark, J.,                  Distill, 5(3):e00024–001, 2020.
+  Kaplan, J., McCandlish, S., and Olah, C. A math-
+  ematical framework for transformer circuits. Trans-               Olah, C., Turner, N. L., and Conerly, T. A toy model of
+  former Circuits Thread, 2021. https://transformer-                  interference weights. Transformer Circuits Thread, July
+  circuits.pub/2021/framework/index.html.                             2025. URL https://transformer-circuits.pub/2025/interfe
+                                                                      rence-weights/index.html. Informal note.
+Elhage, N., Hume, T., Olsson, C., Nanda, N., Henighan,
+  T., Johnston, S., ElShowk, S., Joseph, N., DasSarma,              Olsson, C., Elhage, N., Nanda, N., Joseph, N., DasSarma,
+  N., Mann, B., Hernandez, D., Askell, A., Ndousse, K.,               N., Henighan, T., Mann, B., Askell, A., Bai, Y., Chen,
+  Jones, A., Drain, D., Chen, A., Bai, Y., Ganguli, D.,               A., et al. In-context learning and induction heads. arXiv
+  Lovitt, L., Hatfield-Dodds, Z., Kernion, J., Conerly, T.,           preprint arXiv:2209.11895, 2022.
+  Kravec, S., Fort, S., Kadavath, S., Jacobson, J., Tran-
+  Johnson, E., Kaplan, J., Clark, J., Brown, T., McCan-             Orgad, H., Wei, B., Zheng, K., Wattenberg, M., Henderson,
+  dlish, S., Amodei, D., and Olah, C. Softmax linear units.           P., Goldfarb-Tarrant, S., and Belinkov, Y. Large language
+  Transformer Circuits Thread, 2022a. https://transformer-            models generate harmful content using a distinct, unified
+  circuits.pub/2022/solu/index.html.                                  mechanism. arXiv preprint arXiv:2604.09544, 2026.
+
+                                                                9
+                         Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+Pearce, M. T., Dooms, T., Rigg, A., Oramas, J. M., and
+  Sharkey, L. Bilinear mlps enable weight-based mecha-
+  nistic interpretability. arXiv preprint arXiv:2410.08417,
+  2024.
+Team, C. Codeparrot dataset. https://huggingface.co/datas
+  ets/transformersbook/codeparrot, 2022.
+
+Wang, K., Variengien, A., Conmy, A., Shlegeris, B., and
+ Steinhardt, J. Interpretability in the wild: a circuit for
+ indirect object identification in gpt-2 small. arXiv preprint
+ arXiv:2211.00593, 2022.
+Weiss, G., Goldberg, Y., and Yahav, E. Thinking like trans-
+ formers. In International Conference on Machine Learn-
+ ing, pp. 11080–11090. PMLR, 2021.
+Yu, M., Wang, D., Shan, Q., Reed, C. J., and Wan, A. The
+  super weight in large language models. arXiv preprint
+  arXiv:2411.07191, 2024.
+
+
+
+
+                                                                 10
+                          Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+A. Appendix
+A.1. Corpus Selection Additional Details
+We use CodeParrot (Team, 2022) as a proxy for the original Python pretraining data of the Gao et al. (2025) model, which is
+not publicly released, and stream The Pile (Gao et al., 2020) for Pythia-70m, which matches the pretraining distribution but
+not the exact training sequences. For the Drori (2026) sparse and dense models we use SimpleStories (Drori, 2026), which
+is the actual training corpus.
+To verify that our chosen corpora are reasonable approximations of each model’s training distribution, we compare the
+cross-entropy loss of each model on its evaluation corpus against the loss on deliberately mismatched corpora. Table 2
+reports the comparison. The Gao et al. (2025) model achieves a CE of 2.34 on CodeParrot, but its loss rises sharply on
+out-of-distribution text. SimpleStories English yields a CE of 3.70, and French Wikipedia yields 4.50, both substantially
+higher than the in-distribution CE. Likewise, the Drori sparse model achieves a CE of 2.98 on SimpleStories, well below
+what either model achieves outside its training domain. We take the size of the in-distribution-versus-out-of-distribution gap
+as evidence that CodeParrot and SimpleStories are close enough to each model’s training distribution to serve as evaluation
+corpora for our pipeline.
+
+Table 2. Cross-entropy loss of each model on in-distribution and out-of-distribution corpora. The large gap between in- and out-of-
+distribution CE indicates that our chosen evaluation corpora are reasonable approximations of each model’s training distribution.
+
+                               Model                  Corpus                    CE Loss     In-dist?
+                               Gao et al. (2025)      CodeParrot (Python)         2.34        Yes
+                               Drori (2026), sparse   SimpleStories               2.98        Yes
+                               Gao et al. (2025)      SimpleStories (English)     3.70        No
+                               Gao et al. (2025)      French Wikipedia            4.50        No
+
+The per-weight ablation effect |∆CE| spans multiple orders of magnitude across all models, from ∼ 10−3 down to below
+10−6 (Figure 1).
+
+
+
+
+                    Figure 8. Another representative MLP weight from Gao et al. (2025) sparse code transformer.
+
+
+A.2. Distributions of recovery and inverse
+Figures 10 and 11 show the distributions of best-of-N recovery and inverse scores across all sampled weights, sorted within
+each model. These curves give a more complete view of the behavior summarized by the headline interpretability rates.
+The sparse models have a long tail of weights that pass both the recovery and inverse criteria, while the dense baselines
+reach the canonical thresholds only on a much smaller slice. Negative inverse values for the sparse models reflect predicates
+whose negation raises loss above the fully-ablated baseline, which is direct evidence that the predicate is identifying a real,
+localized effect rather than partitioning a uniform contribution.
+Comparing Figure 10 to the held-out version in Figure 11, the gap between the sparse and dense models widens. The sparse
+
+                                                                11
+                          Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+
+
+
+Algorithm 1 Per-weight conditional-zero pipeline.
+Input: Model M , weight w, corpus X, LLM A, cap c.
+Output: Best predicate f ∗ and its scores (r∗ , v ∗ , p∗ , s∗ ).
+ 1: Compute the weight’s effect across the corpus. Run M and Mw=0 on X.
+ 2:   Compute ∆CE ← CE∅ − CE0 , the corpus-level cross-entropy gap.
+ 3:   Compute KLp at every position; keep the top 90% of cumulative KL positions.
+ 4: Propose candidates. Pass the selected positions to A and sample K predicates f1 , . . . , fK .
+ 5: Score each candidate.
+ 6: for k = 1, . . . , K do
+               1 P
+ 7:      pk ←            [fk (x)]                                          ▷ coverage: fraction of positions where fk fires
+              |X| x∈X
+ 8:    if pk = 0 or pk = 1 or pk > c then
+ 9:        sk ← −∞                                                                      ▷ trivially empty / broad: ruled out
+10:        continue
+11:    end if
+12:    Build Mfk : ablate w everywhere, restore it where fk fires.
+13:    Build M¬fk : ablate w everywhere, restore it where fk does not fire.
+                  CEfk − CE0
+14:    rk ← 1 −                                          ▷ recovery: effect explained by restoring at fk ’s firing positions
+                      ∆CE
+                  CE¬fk − CE0
+15:    vk ← 1 −                                                 ▷ inverse: effect explained by the predicate’s complement
+                      ∆CE
+16:    sk ← min(rk , 1 − vk )                                                                        ▷ interpretability score
+17: end for
+18: return f ∗ ← fk∗ where k ∗ = arg maxk sk , and its scores (r ∗ , v ∗ , p∗ , s∗ ).
+      Interpretability decision (threshold T ). A weight is called interpretable if
+
+                                           r∗ ≥ T     and    v∗ ≤ 1 − T      and    p∗ ≤ c.
+
+      Default settings used: T = 0.75 and c = 0.5.
+
+
+
+
+                                                                12
+                         Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+
+
+
+             Figure 9. Representative interpretable attention weight from the Gao et al. (2025) sparse code transformer.
+
+
+
+
+models retain most of their best-of-N recovery on the held-out corpus, while the dense models lose more of theirs, which
+suggests that predicates fitted to sparse-model weights generalize better than those fitted to dense-model weights. We read
+this as further evidence that the predicates for sparse weights are tracking a real property of the weight rather than overfitting
+to features of the corpus used to generate them.
+Figure 12 reports structural statistics of the predicates themselves. Predicates remain short across all models (median ≤ 4
+lines, and only 2 lines on the Drori sparse and dense models), and the predicate language is the same on sparse and dense
+models. The difference in interpretability rates is therefore not driven by sparse models receiving longer or more elaborate
+predicates.
+
+A.3. Marginal shape of sB vs. per-sample consistency
+This appendix decomposes the gap and explains why we treat the marginal-shape effect as the dominant driver. Throughout,
+sA denotes a predicate’s score on the text it was generated from and sB its score on held-out text the LLM never saw.
+
+
+
+Per-sample consistency. Figure 14 fits an ordinary least-squares regression sB ∼ sA per model and reports the slope with
+a 95% CI band. A slope of 1 would indicate that the held-out score perfectly tracks the generating-text score; a slope of 0
+would indicate that sA has no predictive content for sB and a predicate’s apparent score is accidental. The fitted slopes order
+in the same direction as the headline rates.
+
+
+
+Random-chance baseline. A useful way to see why the marginal effect dominates is to ask what interpretability scores
+a random predicate would produce. Consider a predicate that fires on a uniformly random subset of corpus positions
+with coverage pfire , independent of the weight’s actual firing pattern. Restoring the weight at those positions recovers
+approximately pfire of the ablation effect (rec ≈ pfire ); restoring at the complement recovers approximately 1 − pfire (inv
+≈ 1 − pfire ); and the score is s ≈ min(pfire , pfire ) = pfire . Under the gate (pfire ≤ 0.5) the random-chance score is bounded
+above by 0.5, well below the interpretability threshold s ≥ 0.75. A weight whose predicate scores high on the generating
+text purely by chance therefore sits near 0.5, and re-scoring on held-out text pulls it toward the random-chance mean rather
+than near 1. Dense-model weights contribute more mass near 0.5 and less mass near 1, so under held-out re-scoring they
+regress toward the random-chance mean and lose more than sparse-model weights do. This is why evaluating on held-out
+text widens the sparse–dense gap rather than narrowing it, and why the widening is mostly attributable to this marginal-shape
+difference rather than to a per-weight noise difference. The same effect is what the K=10 resampling in Figure 13 measures
+directly: subtracting sample-to-sample wobble leaves the dense models with little stable interpretable mass, since most of
+theirs sat near the random-chance region to begin with.
+
+                                                                 13
+                          Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+
+
+
+Figure 10. Best-of-N recovery (left) and inverse (right) across all sampled weights, sorted within each model so curves are monotone.
+Dashed lines mark the canonical thresholds.
+
+
+A.4. Sensitivity to the candidate budget
+A single LLM call is too noisy to call a weight interpretable. Pooling N candidates per weight and selecting the highest-
+scoring one tightens rates substantially. Sweeping N ∈ {1, 3, 5, 10, 20, 100, 150} (Figure 15) shows interpretability rates
+rising monotonically with N and saturating before N = 150 for the sparse models. We use N = 100 as the default because
+the marginal gain per additional candidate flattens past that point and per-weight LLM cost scales linearly. The cross-model
+ordering is preserved at every N , so the result is not an artifact of the budget we chose.
+
+A.5. Sensitivity to the auto-interp LLM
+To check that the result is not specific to one auto-interp LLM, we re-run the pipeline with Claude Sonnet 4.5, GPT-5, and
+GPT-4o on the same sampled weights.
+Figure 16 reports the interpretable rate at the canonical threshold T = 0.75 for each (model, LLM) pair, and the rate-vs-T
+curves at N = 5. The shape of the curve is consistent across LLMs. Absolute rates differ by up to ∼30 percentage points,
+with stronger LLMs higher, but the cross-model ordering (sparse > dense same-architecture > Pythia) is preserved at every
+T.
+
+A.6. Digit-detection neuron: full decomposition
+Per-weight tokens. Table 3 lists, for each of the neuron’s nine nonzero input weights, the tokens at the weight’s highest-KL
+positions on the CodeParrot corpus.
+
+A.7. String-closing circuit: context-dependent firing
+A weight participating in the quote-closure circuit of Gao et al. (2025) suppresses the model’s tendency to predict a closing
+quote at positions that are still inside an open string. This weight’s importance depends on context and cannot be inferred
+from the focus token alone: when we constrain the predicate language to token-local tests (only the focus token, no
+look-back), the best predicate the LLM finds reaches an interpretability score of −0.98, because whether a " token opens or
+closes a string is undecidable from the token alone. Allowing a small look-back window (TOKENS[pos−k] for k ≤ 8) takes
+the score to +0.83, well above the interpretability threshold. The weight is interpretable, but only under a predicate language
+rich enough to look back; the same weight under the token-local language would be filed under “not interpretable,” and
+the circuit would look incomplete from the weights up. We use this finding as the empirical justification for the ±8-token
+context window in §3.2.
+
+                                                                14
+                           Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+
+
+
+Figure 11. Best-of-N recovery (left) and inverse (right) on the held-out corpus. Same setup as Figure 10, but evaluated on a corpus never
+seen when generating the candidate predicates.
+
+Table 3. For each input weight of the digit-detection neuron (neuron 1863), representative top tokens at the weight’s highest-KL
+positions on the CodeParrot corpus. Tokens are decoded from the tinypython_2k tokenizer. Rows ordered by max KL.
+
+                                            ch (i)   max KL      weight top tokens
+                                              464        26.8    100, 200, 300, 111
+                                               71        22.7    64, 50, 59, 60
+                                              395        17.1    28, 08, 27, 35
+                                              799        16.1    32, 56, 41, 46
+                                              578        13.7    16, 12, 13, 17
+                                              131         8.0    4, 2, 3, e
+                                              678         6.0    7, 8
+                                               87         1.9    90, 89, 95, f
+                                              558         1.4    6, 20, 8, 67
+
+
+
+Figure 17 expands the example to the two quote-detector neurons identified by Gao et al. (2025) — neuron 863 (double
+quotes) and neuron 2790 (single quotes) — with the assigned predicate, interpretability score s = min(rec, 1 − inv), and
+two top-KL example contexts for each of their nonzero input weights, alongside a panel of representative activations of each
+neuron drawn from the top-90% cumulative-activation band.
+
+A.8. Extended case study: a Drori-sparse speech-verb neuron
+This appendix complements the case studies of §5 with a fully worked example on the Drori sparse model: layer-1 MLP
+pre-GELU neuron 2461. We show the activation-level view first, then decompose it weight-by-weight, and end by stating
+what the weight view adds over the activation view.
+
+Activation-level view. On the SimpleStories corpus, the pre-GELU activation of neuron 2461 has mean −2.0, std 1.1,
+and a strong skew: the top positive activations sit between +3.5 and +3.9, and the top negative activations between −7.2
+and −6.4. Figure 18 shows five context snippets per direction, randomly sampled from the top-95% activation band; pill
+saturation tracks magnitude within each panel. Positive activations (left) are concentrated on speech verbs — announced,
+whispered, said, urged, says — in their natural narrative contexts (“. . . ,” she announced, “. . . ” he whispered). Negative
+activations (right) are dominated by the copulas is and are. At the activation level, this is a speech-verb detector: it fires
+up on speech-act verbs and is pushed strongly down on stative-grammar tokens, in line with what neuron-level autointerp
+would label.
+
+                                                                   15
+                           Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+
+
+
+Figure 12. Structural statistics of the LLM-generated predicates per model: distribution of predicate length (lines of code) and predicate
+class (single-token lookup, neighbor test, multi-token context test).
+
+
+Weight-level view. The neuron has 86 nonzero input weights. We rank them by max-KL on a 5,000-sequence SimpleStories
+sample and profile the top 20, applying the conditional-zero scoring of §3.3 to each individually; the remaining 66 weights
+have ablation effects below the noise floor of our metric on this corpus and are not analyzed here. Figure 19 shows all 20
+cards, grouped by the functional role assigned by their predicate. Five clusters emerge:
+
+   • Speech-verb activators (positive weights): six channels whose predicates fire on speech verbs — said, roared,
+     whispered, called, wondered, shouted. These are the weights that drive the neuron up on the left panel of Figure 18.
+
+   • Mental-verb suppressors (negative weights): three channels whose predicates fire on thought, believed, under-
+     stood, thanks. These actively pull the neuron down on a near-neighbour class of verbs that would otherwise share
+     representational support with speech verbs.
+   • Modal-verb suppressor: one channel firing on would, could.
+   • Punctuation gates: seven channels whose predicates fire on clause-boundary commas and periods. These contribute to
+     the neuron’s negative tail and explain a large share of the is/are suppression observed in the activation view: copulas
+     in this corpus tend to sit one or two tokens after a clause-boundary punctuation mark.
+   • Specific-token gates: three channels with narrower predicates — a dedicated ‘as’ detector, a ‘called out’ pattern, and a
+     physical-action verb gate.
+
+Each card in Figure 19 reports recovery, inverse, and the fraction of corpus positions where the predicate fires; the strongest
+cards (e.g., ch. 909 ‘as’ detector with rec = 1.22, inv = −0.22) sit comfortably above the T = 0.75 interpretability bar.
+Weaker cards (e.g., the modal suppressor on ch. 38 with rec = 0.27, inv = 0.73) do not pass the bar individually, but their
+predicates remain consistent with the role inferred from neighbouring weights in the same group.
+
+What the weight view adds. At the activation level neuron 2461 reads as a single “speech-verb detector.” At the weight
+level the same neuron implements multiple parallel gating decisions: it activates speech verbs, suppresses near-neighbour
+verb classes (mental verbs, modals) that share representational support with speech verbs, and routes through clause-
+boundary punctuation patterns that account for its strongest negative activations. These contributions cancel and add into the
+single scalar that activation-level analyses report, so they are not separable from the activation summary alone — only from
+the per-weight decomposition.
+
+
+
+
+                                                                   16
+                          Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+
+
+
+Figure 13. Reliability of per-weight interpretability scores under held-out resampling. Each weight is re-scored on K=10 disjoint
+held-out splits; bars show the fraction of each model’s cross-weight score variance that survives redrawing the corpus (95% bootstrap
+CIs). Sparse-model scores are mostly stable properties of the weight; on Pythia, most of the apparent spread is sampling noise.
+
+
+
+
+Figure 14. Held-out interpretability score sB = min(recB , 1 − invB ) across models. OLS fit sB ∼ sA per model with 95% CI; slope
+annotated.
+
+
+
+
+                                                                 17
+                          Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+
+
+
+      Figure 15. Interpretable rate as a function of the candidate budget N , with 95% Wilson CIs. Single-call N from 1 to 150.
+
+
+
+
+Figure 16. Interpretable rate by auto-interp LLM. Left: fraction of sampled weights interpretable at T = 0.75, with 95% Wilson CIs, on
+the same weights evaluated by four different LLMs. Right: interpretable rate as a function of threshold T .
+
+
+
+
+                                                                 18
+                          Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+
+
+
+Figure 17. Quote-detector neurons from the string-closing circuit of Gao et al. (2025). Neuron 863 (top band) fires on double quotes;
+neuron 2790 (bottom band) fires on single quotes. Each card shows one nonzero input weight: the predicate, the interpretability score
+s = min(rec, 1 − inv), the recovery and inverse values, and two top-KL example contexts (focus token outlined in red, pill saturation
+graded by per-token KL within the row). The right panel of each band shows representative activating contexts of the neuron, randomly
+sampled from the top-90% cumulative-activation band on CodeParrot.
+Note: ∗ on the score marks weights whose |∆CE| is at the noise floor.
+
+
+
+
+Figure 18. Activation-level view of Drori-sparse layer-1 neuron 2461. Left: five contexts where the pre-activation is most positive
+(random sample from the top-95% positive band). The neuron fires on speech-act verbs. Right: five contexts where it is most negative;
+the neuron is pushed down on copulas (is, are). Pill saturation tracks |activation| within each panel.
+
+
+
+
+                                                                 19
+                           Individual Parameters in Weight-Sparse Transformers Appear Interpretable
+
+
+
+
+Figure 19. Weight-level decomposition of Drori-sparse layer-1 neuron 2461. The neuron has 86 nonzero input weights; the figure shows
+the 20 strongest by max-KL on a 5,000-sequence SimpleStories sample, grouped by the functional role assigned by their predicate. Five
+context snippets per card are sampled from the top-95% cumulative-KL band of that weight; pill saturation tracks the row’s KL within the
+card.
+
+
+
+
+                                                                  20
+

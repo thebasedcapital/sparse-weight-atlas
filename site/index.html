@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sparse Weight Atlas</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="hero">
+  <div class="hero-top">
+    <div>
+      <h1>Sparse Weight Atlas</h1>
+      <p class="sub">Every nonzero MLP weight of a weight-sparse transformer — ablated, profiled,
+      and explained by an executable predicate. Metric of
+      <a href="https://arxiv.org/abs/2607.02964" target="_blank" rel="noopener">arXiv 2607.02964</a>.</p>
+    </div>
+    <div class="model-switch">
+      <label for="model-select">model</label>
+      <select id="model-select"></select>
+    </div>
+  </div>
+  <div class="stats" id="stats">
+    <div class="stat"><span class="num" id="st-total">–</span><span class="lbl">nonzero weights</span></div>
+    <div class="stat"><span class="num" id="st-scored">–</span><span class="lbl">scored</span></div>
+    <div class="stat accent"><span class="num" id="st-robust">–</span><span class="lbl">robustly interpretable <em id="st-robust-pct"></em></span></div>
+    <div class="stat"><span class="num" id="st-noise">–</span><span class="lbl">noise floor</span></div>
+  </div>
+  <div class="searchbar">
+    <input id="search" type="search" spellcheck="false"
+      placeholder='search: wid · "L0 fc 1863 464" · predicate text…' autocomplete="off">
+    <div id="search-results" class="search-results hidden"></div>
+  </div>
+  <div class="legend">
+    <span class="key"><i class="sw pass"></i>robust pass</span>
+    <span class="key"><i class="sw scored"></i>scored</span>
+    <span class="key"><i class="sw noise"></i>noise floor</span>
+    <span class="key"><i class="sw nocand"></i>no candidate</span>
+    <span class="key"><i class="sw unscored"></i>unscored</span>
+    <span class="key dim">click a cell for its card · T=0.75, c=0.5</span>
+  </div>
+</header>
+
+<main id="layers"></main>
+
+<div id="tooltip" class="tooltip hidden"></div>
+
+<div id="card-backdrop" class="backdrop hidden">
+  <div id="card" class="card"></div>
+</div>
+
+<footer class="foot">
+  <span id="foot-note"></span>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+{
+  "eos_token": "<|endoftext|>",
+  "model_max_length": 256,
+  "padding_side": "left",
+  "tokenizer_class": "PreTrainedTokenizerFast"
+}

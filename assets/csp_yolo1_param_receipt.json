@@ -1,0 +1,9 @@
+{
+ "bigram_table (dense lookup)": 4194304,
+ "norms/biases/other": 136192,
+ "embed/unembed": 81920,
+ "attn weights": 196608,
+ "mlp weights": 393216,
+ "_total_params": 160570368,
+ "_nonzero": 5002240
+}

@@ -1,0 +1,11 @@
+.venv/
+model/model.safetensors
+data/
+runs/
+__pycache__/
+target/
+site/data/
+site/pilot/
+data_div*/
+model/csp_yolo1/final_model.pt
+synth/fixtures/out/
