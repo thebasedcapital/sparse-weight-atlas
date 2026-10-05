@@ -46,6 +46,25 @@ Measured on a Quadro RTX 4000 (8 GB, fp32 — fp16 breaks bitwise exactness): ex
 
 - Predicates come from enumerative search over a fixed causal grammar (token sets, character classes, ±8-token
   windows, and/or), not from an LLM; candidates are chosen on a train/validation split of slice 00.
+- Exactly-scored candidates are selected by `A.score − 0.5·A.cov`, not the paper's plain `A.score` argmax.
 - The robust null is ours (the paper leaves it unspecified): a coverage-matched random position mask per slice;
   pass = mean ≥ 0.75 and mean − 2·SEM > null mean + 2·null SD.
 - Slices are 16,384 positions, one file per repository, ≤512 tokens per document.
+
+## Launch assets
+
+```bash
+.venv/bin/python scripts/make_launch.py \
+  --pilot-report runs/csp_yolo1/pilot/report.json \
+  --scores-dirs runs/csp_yolo1/scores_casestudy runs/csp_yolo1/scores_pilot
+```
+
+Writes measured stills, a draft X thread, and a ≤30-second 1600×900 browser tour under `assets/launch/`.
+Missing pilot results skip `headline.png` and `layers_bins.png` with an explicit message; the case-study
+diagram and predicate gallery use existing score files and read-only profile contexts. `--top-n` selects
+the gallery size and `--skip-tour` regenerates only images/text. Rendering requires Pillow, matplotlib,
+and NumPy; the tour requires `playwright` with Chromium (`.venv/bin/playwright install chromium`) and ffmpeg.
+It serves `site/` on an ephemeral localhost port and closes the server/browser afterwards; no GPU is used.
+Real site exports carry score-directory and timestamp provenance. Unprovenanced model data is excluded;
+if only a labeled fixture can supply a passing card, the recording is named `site_tour_fixture.mp4`.
+The thread distinguishes a selected case study from the uniform pilot and never invents a missing rate.
