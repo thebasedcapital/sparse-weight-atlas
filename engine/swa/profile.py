@@ -352,6 +352,8 @@ def main(argv=None) -> None:
     ap.add_argument("--limit", type=int, default=None, help="max wids per shard")
     ap.add_argument("--wids-file", type=Path, default=None, help=".npy of explicit wids")
     ap.add_argument("--force", action="store_true", help="redo even complete shards")
+    ap.add_argument("--fast", action="store_true",
+                    help="opt-in fp32 CSR suffix replay (csp_yolo1; measured numerical-floor gate)")
     ap.add_argument("--triage", action="store_true")
     ap.add_argument("--bench", action="store_true")
     ap.add_argument("--all", action="store_true", help="run triage and bench too")
@@ -407,7 +409,11 @@ def main(argv=None) -> None:
                 wl = wl[: args.limit]
             todo[shard] = wl
 
-    r = Replayer(args.model, device=args.device)
+    if args.fast:
+        from swa.fastreplay import FastReplayer
+        r = FastReplayer(args.model, device=args.device)
+    else:
+        r = Replayer(args.model, device=args.device)
     r.load_slice(0)
     total = sum(len(v) for v in todo.values())
     print(f"{args.model}: {len(todo)} shards, {total} weights")

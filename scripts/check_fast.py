@@ -15,6 +15,28 @@ from swa.replay import Replayer
 from swa.fastreplay import FastReplayer
 
 
+class BoundedReference(Replayer):
+    """Identical eager arithmetic, dropping only target tensors unused in full ablation."""
+    def _mlp_ablated(self, L, base, mat, row, col):
+        base.pop('out', None)
+        base.pop('a' if mat == 0 else 'act', None)
+        return super()._mlp_ablated(L, base, mat, row, col)
+
+
+def bounded_tail(model):
+    """Same blocks and arithmetic as forward_tail, without the unused hs tensor list."""
+    def forward(x, n, targets=None, additional_logits_bias=None,
+                include_resid_mid=False, pos_emb_to_cat=None):
+        if targets is not None or include_resid_mid:
+            raise ValueError('measurement tail supports inference without split blocks only')
+        for block in model.transformer.h[n:]:
+            x = block(x, pos_emb_to_cat) if model.config.cat_pos_emb else block(x)
+        logits = (model.lm_head(model.transformer.ln_f(x)) + model.final_logits_bias
+                  + (additional_logits_bias if additional_logits_bias is not None else 0))
+        return logits, torch.zeros(1, device=x.device), []
+    return forward
+
+
 def memory_limit():
     total = torch.cuda.get_device_properties(0).total_memory
     torch.cuda.set_per_process_memory_fraction(2.5 * 1024**3 / total)
@@ -65,7 +87,9 @@ def measure(r, out):
                   'peak_reserved_bytes': torch.cuda.max_memory_reserved(),
                   'trace': str(trace), 'top_ops': [{'name': e.key, 'calls': e.count, 'cuda_ms': e.self_device_time_total / 1000} for e in sorted(events, key=lambda e: e.self_device_time_total, reverse=True)[:15]]}
         print(json.dumps(result, indent=2), flush=True)
-        out.write_text(json.dumps({'measurement': result}, indent=2))
+        previous = json.loads(out.read_text()) if out.exists() else {}
+        previous['measurement'] = result
+        out.write_text(json.dumps(previous, indent=2))
     finally:
         for block, name, original in originals:
             setattr(block, name, original)
@@ -80,8 +104,8 @@ def select_weights(w):
     return sorted(set(result + [7509, 7511, 7514]))
 
 
-def experiments(r, technique, compile_mode, batch=1, reps=3):
-    fast = FastReplayer.from_reference(r, technique, compile_mode)
+def benchmark(r, batch=4, reps=2):
+    fast = FastReplayer.from_reference(r)
     rows = []
     for layer in (0, 5, 11):
         selected = []
@@ -113,32 +137,123 @@ def experiments(r, technique, compile_mode, batch=1, reps=3):
                'max_ce_diff': max_ce, 'max_kl_diff': max_kl}
         rows.append(row)
         print(json.dumps(row), flush=True)
-    return {'technique': technique, 'compile_mode': compile_mode, 'rows': rows,
+    return {'technique': 'sparse', 'seq_chunk': r.seq_chunk, 'rows': rows,
             'peak_allocated_bytes': torch.cuda.max_memory_allocated(),
             'peak_reserved_bytes': torch.cuda.max_memory_reserved()}
+
+
+def extrapolate(r, rows):
+    layers = np.array([row['layer'] for row in rows])
+    result = {}
+    for mode in ('eager', 'fast'):
+        seconds = np.array([1 / row[f'{mode}_wps'] for row in rows])
+        counts = np.bincount(r.weights['layer'], minlength=r.n_layer)
+        result[f'{mode}_hours'] = float(np.dot(counts, np.interp(np.arange(r.n_layer), layers, seconds)) / 3600)
+    result['speedup'] = result['eager_hours'] / result['fast_hours']
+    result['weights'] = len(r.weights['layer'])
+    result['method'] = 'piecewise-linear seconds/weight at layers 0/5/11, measured under live GPU contention'
+    return result
+
+
+def gate(r):
+    wids = select_weights(r.weights)
+    if len(wids) < 32 or not {7509, 7511, 7514}.issubset(wids):
+        raise ValueError('gate requires at least 32 weights including all three digit weights')
+    fast = FastReplayer.from_reference(r)
+    alt = BoundedReference.__new__(BoundedReference)
+    alt.__dict__.update(r.__dict__)
+    alt.seq_chunk = 8 if r.seq_chunk != 8 else 4
+    FastReplayer.load_slice(alt, 0)
+    noise_chunk = alt.seq_chunk
+    alternate = {}
+    for wid in wids:
+        a = alt.ablate([wid], want_kl=True)
+        alternate[wid] = ((a[0][0] - alt.ce_base()).cpu().numpy(), a[1][0].cpu().numpy())
+        del a
+    del alt
+    torch.cuda.empty_cache()
+    floor = {'max_dce_position': 0.0, 'max_kl_position': 0.0, 'max_mean_dce': 0.0}
+    rows = []
+    for index, wid in enumerate(wids):
+        # Alternate A/B ordering; synchronize each arm so live contention treats both alike.
+        if index % 2:
+            _, f = timed(lambda: fast.ablate([wid], want_kl=True))
+            _, e = timed(lambda: r.ablate([wid], want_kl=True))
+        else:
+            _, e = timed(lambda: r.ablate([wid], want_kl=True))
+            _, f = timed(lambda: fast.ablate([wid], want_kl=True))
+        ad, ak = alternate[wid]
+        ed = (e[0][0] - r.ce_base()).cpu().numpy()
+        fd = (f[0][0] - r.ce_base()).cpu().numpy()
+        ek, fk = (v[1][0].cpu().numpy() for v in (e, f))
+        floor['max_dce_position'] = max(floor['max_dce_position'], float(np.abs(ed - ad).max()))
+        floor['max_kl_position'] = max(floor['max_kl_position'], float(np.abs(ek - ak).max()))
+        em, fm, am = (float(v.mean(dtype=np.float64)) for v in (ed, fd, ad))
+        floor['max_mean_dce'] = max(floor['max_mean_dce'], abs(em - am))
+        rows.append({'wid': wid, 'layer': int(r.weights['layer'][wid]),
+                     'matrix': int(r.weights['matrix'][wid]), 'max_dce_error': float(np.abs(ed - fd).max()),
+                     'max_kl_error': float(np.abs(ek - fk).max()), 'mean_dce_eager': em,
+                     'mean_dce_fast': fm, 'mean_dce_error': abs(em - fm),
+                     'mean_tolerance': max(1e-7, 0.01 * abs(em))})
+        del e, f
+    for row in rows:
+        row['pass'] = (row['max_dce_error'] <= floor['max_dce_position']
+                       and row['max_kl_error'] <= floor['max_kl_position']
+                       and row['mean_dce_error'] <= row['mean_tolerance'])
+    result = {'pass': all(row['pass'] for row in rows), 'technique': 'sparse',
+              'n_weights': len(wids), 'seq_chunk': r.seq_chunk, 'noise_seq_chunk': noise_chunk,
+              'floor': floor, 'rows': rows, 'peak_allocated_bytes': torch.cuda.max_memory_allocated(),
+              'peak_reserved_bytes': torch.cuda.max_memory_reserved()}
+    print('measured eager numerical floor:', json.dumps(floor), flush=True)
+    print('PASS' if result['pass'] else 'FAIL', f"{sum(row['pass'] for row in rows)}/{len(rows)} weights", flush=True)
+    for row in rows:
+        if not row['pass']:
+            print('FAILED:', json.dumps(row), flush=True)
+    return result
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--measure', action='store_true')
-    ap.add_argument('--experiments', choices=['graph', 'compile', 'sparse', 'cache'])
-    ap.add_argument('--compile-mode', default='max-autotune-no-cudagraphs')
-    ap.add_argument('--batch', type=int, default=1)
-    ap.add_argument('--reps', type=int, default=3)
+    ap.add_argument('--bench', action='store_true', help='interleaved A/B throughput benchmark')
+    ap.add_argument('--gate', action='store_true', help='numerical-floor gate (default without other modes)')
+    ap.add_argument('--batch', type=int, default=4)
+    ap.add_argument('--reps', type=int, default=2)
+    ap.add_argument('--seq-chunk', type=int, default=64)
     ap.add_argument('--out', type=Path, default=ROOT / 'runs/csp_yolo1/fast_bench.json')
     args = ap.parse_args()
+    if args.batch < 1 or args.reps < 1 or args.seq_chunk < 1:
+        ap.error('batch, reps and seq-chunk must be positive')
+    if not (args.measure or args.bench or args.gate):
+        args.gate = True
     memory_limit()
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with torch.no_grad():
-        r = Replayer(seq_chunk=8)
-        r.load_slice(0)
+        loader = FastReplayer(seq_chunk=args.seq_chunk)
+        loader.load_slice(0)
+        r = BoundedReference.__new__(BoundedReference)
+        r.__dict__.update(loader.__dict__)
+        r.model.forward_tail = bounded_tail(r.model)
+        stored_base = np.load(ROOT / 'runs/csp_yolo1/base/ce0_slice00.npy')
+        baseline_diff = float(np.abs(r.ce_base().cpu().numpy() - stored_base).max())
+        print('cached baseline max difference from saved eager64:', baseline_diff, flush=True)
+        if args.seq_chunk == 64 and baseline_diff != 0:
+            raise RuntimeError('memory-bounded eager prefix differs from saved production baseline')
         if args.measure:
             measure(r, args.out)
-        if args.experiments:
-            result = experiments(r, args.experiments, args.compile_mode, args.batch, args.reps)
+        if args.bench:
+            result = benchmark(r, args.batch, args.reps)
+            result['extrapolation'] = extrapolate(r, result['rows'])
             previous = json.loads(args.out.read_text()) if args.out.exists() else {}
             previous.setdefault('experiments', []).append(result)
             args.out.write_text(json.dumps(previous, indent=2))
+        if args.gate:
+            result = gate(r)
+            previous = json.loads(args.out.read_text()) if args.out.exists() else {}
+            previous.setdefault('gates', []).append(result)
+            args.out.write_text(json.dumps(previous, indent=2))
+            if not result['pass']:
+                raise SystemExit(1)
 
 
 if __name__ == '__main__':

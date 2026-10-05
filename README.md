@@ -42,6 +42,25 @@ cd site && python -m http.server 8765                      # browse the atlas
 Measured on a Quadro RTX 4000 (8 GB, fp32 — fp16 breaks bitwise exactness): exact profiling 0.9 (layer 0) to
 8 (layer 11) weights/s, ~66 h for all 393,216 MLP weights; exact scoring ~43 s/weight; synthesis ~600 weights/s.
 
+Opt-in accelerated profiling keeps the production sequence chunk (64) and fp32, uses CSR MLPs only in the
+suffix, and reuses target-layer activations across weight variants. The eager default and shard format are
+unchanged. `scripts/check_fast.py` passed 33 weights across layers 0/5/11 and both matrices, including digit
+weights 7509/7511/7514: measured eager chunk-64 vs chunk-8 noise floors were `2.40564e-4` per-position ΔCE,
+`6.10352e-5` per-position KL, and `1.57797e-7` mean ΔCE; fast mean ΔCE must additionally agree within
+`max(1e-7, 1% relative)`. This is numerical-floor equivalence, **not** the default's bitwise G1 guarantee.
+Interleaved four-weight benchmarks with the pilot sharing the GPU measured eager/fast throughput of
+`0.423/0.548`, `0.715/0.942`, and `4.199/7.551` weights/s at layers 0/5/11. Piecewise-linear extrapolation
+over 393,216 weights gives `142.17 -> 107.21 h` (1.326×) **under that contention**, not an uncontended ETA.
+Measurements and rejected graph/compile/padded-attention/gather experiments: `runs/csp_yolo1/fast_bench.json`.
+
+```bash
+PYTHONPATH=engine .venv/bin/python scripts/check_fast.py --gate --bench
+# For a new/resumed run only, with no other profiler writing these shards:
+PYTHONPATH=engine .venv/bin/python -m swa.profile --model csp_yolo1 --layers 0,1,2,3,4,5,6,7,8,9,10,11 --fast
+```
+
+The existing `swa-full` unit is not switched, stopped, or restarted by this opt-in path.
+
 ## Deviations from the paper (documented, deliberate)
 
 - Predicates come from enumerative search over a fixed causal grammar (token sets, character classes, ±8-token
