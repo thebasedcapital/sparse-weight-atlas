@@ -4,7 +4,7 @@ draft only; link placeholders must be replaced before posting.
 
 ## post 1 (189 chars)
 
-zero-llm search matches the paper's headline under our reading of its test: 17.3% vs 15.0%. but against a coverage-matched random null: 14.1%; strict null: 1.8%. that tension is the result.
+zero-llm search matches the paper's headline under our reading of its test: 17.3% vs 15.0%. but against a coverage-matched random null: 10.5%; strict null: 1.8%. that tension is the result.
 
 ## post 2 (163 chars)
 
@@ -42,12 +42,13 @@ corpus: codeparrot/codeparrot-clean-valid. repo-exclusive slices; one file per r
 
 honest limits: fixed causal grammar, not llm hypotheses; discovery train/validation split; coverage-penalized candidate selection, not plain argmax. null-cone reading and both coverage-matched alternatives are explicit. deviations are in the readme.
 
-## post 11 (76 chars)
+## post 11 (75 chars)
 
-browse predicates, scores and contexts: {site_url}\nreproduce it: {repo_url}
+browse predicates, scores and contexts: {site_url}
+reproduce it: {repo_url}
 
 ## quote tweet
 
 source: https://x.com/Arnauya/status/2106229708438254025
 
-@Arnauya @sheimersheim zero-llm search reaches 17.3% vs the paper's 15.0% under its null-cone test. but most predicates are broad; random-null mean 14.1%, strict null 1.8%. executable code + exact tests: {repo_url}
+@Arnauya @sheimersheim zero-llm search reaches 17.3% vs the paper's 15.0% under its null-cone test. but most predicates are broad; random-null mean 10.5%, strict null 1.8%. executable code + exact tests: {repo_url}

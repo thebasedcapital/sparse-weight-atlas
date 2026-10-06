@@ -152,9 +152,9 @@ mask (same per-slice coverage, fixed seed). Three rules are reported (`swa.pilot
 wid, matrix, row, col, value, dce, status, score_robust_mean, pass, pass_null_mean, pass_strict, desc),
 `w/{wid//1000}.json` (full cards for 1000 wids: spec, py, desc, A, B, robust, the same three top-level
 rule booleans, top 3 contexts each as ±8 decoded tokens with the focus index and dce/kl at focus).
-Exported `pass` is the headline cone rule; `pass_null_mean` also beats the null mean; `pass_strict` clears
-the null mean + 2 SD. Every rule includes the mean ≥ 0.75 gate. These booleans are derived from numeric
-score fields; full cards retain the original `robust` record, whose `pass` is strict, without mutation.
+Exported `pass` is the headline cone rule; `pass_null_mean` is cone AND beats the null mean;
+`pass_strict` is cone AND the stored strict verdict. Every rule includes the mean ≥ 0.75 gate.
+Cards retain the original `robust` record, whose `pass` is the scorer's strict verdict, without mutation.
 Summary counts use `robust_pass`, `robust_beats_null_mean`, `robust_strict`; rates use `robust`,
 `robust_beats_null_mean`, `robust_strict`. These rates and InterpA/B divide by all verdicts
 (`scored + noise_floor + no_candidate`), excluding only unscored weights. Per-layer/per-bin tables expose

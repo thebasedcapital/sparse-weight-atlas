@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 from pathlib import Path
 import re
 import shutil
@@ -143,7 +142,8 @@ def layers_bins(report, out):
         for j, (rule, name, color) in enumerate(RULES):
             values = [100 * r[rule]["rate"] if r[rule]["rate"] is not None else np.nan for r in rows]
             errors = [100 * r[rule]["sem"] if r[rule]["sem"] is not None else 0 for r in rows]
-            ax.bar(x + (j - 1) * .25, values, yerr=errors, color=color, capsize=3, width=.23, label=name)
+            ax.bar(x + (j - 1) * .25, values, yerr=errors, color=color, capsize=3,
+                   error_kw={"ecolor": DIM}, width=.23, label=name)
         ax.set_xticks(x, [str(r[label]) for r in rows], rotation=25 if label == "bin" else 0)
         high = max((100 * (r[k]["rate"] + r[k]["sem"]) for r in rows for k, _, _ in RULES
                     if r[k]["rate"] is not None), default=1)
@@ -159,7 +159,7 @@ def layers_bins(report, out):
     fig.text(.065, .035, "denominators: uniform-pilot per-group n; error bars: binomial SEM; no LLM calls", color=DIM)
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(.5, .895), ncol=3, frameon=False)
-    fig.subplots_adjust(left=.07, right=.97, bottom=.15, top=.83, wspace=.3)
+    fig.subplots_adjust(left=.07, right=.97, bottom=.15, top=.77, wspace=.3)
     path = out / "layers_bins.png"
     fig.savefig(path, facecolor=BG)
     plt.close(fig)
@@ -341,7 +341,7 @@ def thread(report, pilot_records, neuron, receipt, manifest, out):
                  "different corpus budget from the paper.")
     posts.append("honest limits: fixed causal grammar, not llm hypotheses; discovery train/validation split; coverage-penalized candidate selection, "
                  "not plain argmax. null-cone reading and both coverage-matched alternatives are explicit. deviations are in the readme.")
-    posts.append("browse predicates, scores and contexts: {site_url}\\nreproduce it: {repo_url}")
+    posts.append("browse predicates, scores and contexts: {site_url}\nreproduce it: {repo_url}")
     if report:
         quote = (f"@Arnauya @sheimersheim zero-llm search reaches {100 * rates['robust']['rate']:.1f}% vs the paper's "
                  f"{100 * report['paper']['robust']:.1f}% under its null-cone test. but most predicates are broad; "

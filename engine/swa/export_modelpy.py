@@ -77,7 +77,7 @@ def export_modelpy(model: str, runs: Path, out: Path,
     ap('All reported rule rates use VERDICTS = SCORED + NOISE_FLOOR + NO_CANDIDATE.')
     ap('Cone: mean >= 0.75 and mean - 2*SEM > 0.')
     ap('Beats-null-mean: cone, and mean - 2*SEM > null_mean.')
-    ap('Strict: mean >= 0.75 and mean - 2*SEM > null_mean + 2*null_sd.')
+    ap('Strict: cone, and the stored robust.pass verdict (lower > null_mean + 2*null_sd).')
     ap('')
     ap('W[layer][matrix] is a list of entries, one per nonzero weight, in wid order:')
     ap('    (wid, row, col, value, predicate_source_or_None, description_or_None)')

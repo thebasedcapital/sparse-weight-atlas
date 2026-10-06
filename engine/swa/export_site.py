@@ -82,18 +82,17 @@ def score_provenance(directories: list[Path]) -> dict:
 
 
 def robust_rules(record: dict | None) -> dict:
-    """Derive the three export rules from numeric scores, without changing raw records."""
+    """Derive nested export rules; retain the scorer's strict verdict without mutation."""
     rob = (record or {}).get("robust") or {}
     mean, sem = rob.get("mean"), rob.get("sem")
-    null_mean, null_sd = rob.get("null_mean"), rob.get("null_sd")
+    null_mean = rob.get("null_mean")
     lower = mean - 2 * sem if mean is not None and sem is not None else None
     above_bar = mean is not None and mean >= 0.75 and lower is not None
     cone = bool(above_bar and lower > 0)
     return {
         "pass": cone,
         "pass_null_mean": bool(cone and null_mean is not None and lower > null_mean),
-        "pass_strict": bool(above_bar and null_mean is not None and null_sd is not None
-                            and lower > null_mean + 2 * null_sd),
+        "pass_strict": bool(cone and rob.get("pass")),
     }
 
 

@@ -42,8 +42,8 @@ function ruleVerdicts(record) {
     const gate = r.mean >= 0.75;
     return {
       cone: gate && lower > 0,
-      nullMean: gate && lower > r.null_mean,
-      strict: gate && lower > r.null_mean + 2 * r.null_sd,
+      nullMean: gate && lower > 0 && lower > r.null_mean,
+      strict: gate && lower > 0 && r.pass === true,
       derived: true,
     };
   }
@@ -290,8 +290,8 @@ function robustHtml(w, rules) {
     ${state.summary.fixture ? '<p class="fixture-note">SYNTHETIC FIXTURE · not measured model evidence.' +
       (rules.derived ? " Outcomes derived from synthetic numeric stats." : " Rule fields unavailable.") + "</p>" : ""}
     ${rule("Cone · headline", rules.cone, "mean ≥ 0.75 and mean − 2·SEM &gt; 0")}
-    ${rule("Beats null mean", rules.nullMean, "mean ≥ 0.75 and mean − 2·SEM &gt; mean(null)")}
-    ${rule("Strict · null mean + 2 SD", rules.strict, "mean ≥ 0.75 and mean − 2·SEM &gt; mean(null) + 2·SD(null)")}
+    ${rule("Beats null mean", rules.nullMean, "cone PASS and mean − 2·SEM &gt; mean(null)")}
+    ${rule("Strict · null mean + 2 SD", rules.strict, "cone PASS and stored strict PASS (mean − 2·SEM &gt; mean(null) + 2·SD(null))")}
     ${r ? `<div class="robust-stats">
       <span>mean = ${fmtRaw(r.mean)}</span><span>SEM = ${fmtRaw(r.sem)}</span>
       <span>mean(null) = ${fmtRaw(r.null_mean)}</span><span>SD(null) = ${fmtRaw(r.null_sd)}</span>
