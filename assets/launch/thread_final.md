@@ -20,9 +20,9 @@ where it works, it really works: the paper's digit-detector neuron 1863.
 the search independently found `tokens[pos].isdigit()` for 8 of its weights. mean held-out score 0.95–1.02 across 10 unseen slices, and they pass even the strict null.
 
 ## 4 — video: assets/launch/site_tour.mp4
-how: zero one weight → exact per-token loss change (replay is bit-identical to zeroing it) → rust search over a causal rule grammar at ~600 weights/s → restore the weight only where the rule fires and measure loss on 11 held-out slices.
+how: zero one weight → exact per-token loss change → rust search over a causal rule grammar (~600 weights/s) → restore the weight only where the rule fires, measure loss on 11 held-out slices.
 
-160.6m params. 807,936 nonzero. 393,216 mlp weights. the atlas of all of them is running now.
+160.6m params, 807,936 nonzero, 393,216 mlp weights. atlas of all of them in progress.
 
 ## 5
 uniform sample of 1,024 weights, codeparrot-valid, every deviation from the paper in the readme.
