@@ -23,7 +23,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "engine"))
-from swa.export_site import ProfileIndex, load_scores
+from swa.export_site import ProfileIndex, load_scores, robust_rules
 
 BG = "#0c1119"
 PANEL = "#151e2a"
@@ -32,6 +32,11 @@ DIM = "#a6b7ca"
 GREEN = "#67e8a5"
 BLUE = "#6bcaff"
 RED = "#f29b9b"
+RULES = (("robust", "paper null cone", GREEN),
+         ("robust_beats_null_mean", "random null mean", BLUE),
+         ("robust_strict", "strict mean + 2 SD", RED))
+GALLERY_MAX_COV = 0.1
+BROAD_COV = 0.3
 
 
 def json_read(path):
@@ -78,26 +83,48 @@ def rate_label(block):
     return f"{100 * block['rate']:.1f}% ± {100 * block['sem']:.1f}% SEM"
 
 
-def headline(report, corpus, out):
+def paper_label(report, key):
+    label = {"interpA": "InterpA", "interpB": "InterpB", "robust": "Robust"}[key]
+    uncertainty = re.search(rf"{label} [\d.]+ \+/- ([\d.]+)%", report["paper"].get("source", ""))
+    sem = f" ± {uncertainty.group(1)}%" if uncertainty else ""
+    return f"{100 * report['paper'][key]:.1f}%{sem}"
+
+
+def broad_fraction(records):
+    passing = [r for r in records.values() if robust_rules(r)["pass"]]
+    broad = sum((r.get("A") or {}).get("cov", 0) > BROAD_COV for r in passing)
+    return broad, len(passing)
+
+
+def headline(report, corpus, out, pilot_records):
     rates = report["rates"]["over_verdicts"]
-    if any(rates[k].get("rate") is None for k in ("interpA", "interpB", "robust")):
-        skip("headline.png", "pilot has no verdict-rate estimates")
+    if any(rates[k].get("rate") is None for k in ("interpA", "interpB", *(k for k, _, _ in RULES))):
+        skip("headline.png", "pilot has no complete three-rule verdict-rate estimates")
         return
     image = Image.new("RGB", (1600, 900), BG)
     d = ImageDraw.Draw(image)
-    txt(d, (75, 52), "WEIGHTS, NOT STORIES.", 65, bold=True)
-    txt(d, (78, 145), "executable predicates · no LLM calls", 36, GREEN)
-    txt(d, (78, 210), f"{report['model']}  /  n = {rates['robust']['n']:,} sampled weights with verdicts", 29)
-    txt(d, (78, 260), corpus, 25, DIM)
-    txt(d, (80, 340), "exact conditional-zero metric", 27, DIM)
-    txt(d, (850, 340), "paper Table 1 · Gao model", 27, DIM)
-    for i, (key, label) in enumerate((("interpA", "InterpA"), ("interpB", "InterpB"), ("robust", "Robust"))):
-        y = 405 + 115 * i
-        txt(d, (80, y), label, 36, bold=True)
-        txt(d, (290, y), rate_label(rates[key]), 34, GREEN)
-        txt(d, (890, y), f"{100 * report['paper'][key]:.1f}%", 46, BLUE, bold=True)
-    txt(d, (80, 787), "ours: binomial SEM; all sampled verdicts include noise-floor / no-candidate weights", 24, DIM)
-    txt(d, (80, 829), "different predicates, selection objective, corpus and robust null; not a matched replication", 24, DIM)
+    txt(d, (65, 38), "THE ROBUST RATE DEPENDS ON THE NULL.", 57, bold=True)
+    txt(d, (68, 118), f"{report['model']} · n = {rates['robust']['n']:,} uniform weights · no LLM calls", 32, GREEN)
+    txt(d, (68, 180), "same executable predicates. same exact held-out scores. three different tests.", 28, DIM)
+    for i, (key, label, color) in enumerate(RULES):
+        x, y = 65 + i * 500, 245
+        d.rounded_rectangle((x, y, x + 470, y + 210), radius=16, fill=PANEL, outline=color, width=2)
+        txt(d, (x + 22, y + 18), label, 31, color, bold=True)
+        txt(d, (x + 22, y + 63), f"{100 * rates[key]['rate']:.1f}%", 70, color, bold=True)
+        txt(d, (x + 230, y + 96), f"± {100 * rates[key]['sem']:.1f}% SEM", 26, DIM)
+        txt(d, (x + 25, y + 164), f"{rates[key]['k']} / {rates[key]['n']:,} passing", 26)
+    txt(d, (68, 488), f"paper Table 1 · Gao model: robust {paper_label(report, 'robust')}", 33, BLUE, bold=True)
+    for i, (key, label) in enumerate((("interpA", "InterpA"), ("interpB", "InterpB"))):
+        y = 554 + i * 76
+        txt(d, (68, y), label, 35, bold=True)
+        txt(d, (255, y), rate_label(rates[key]), 33, GREEN)
+        txt(d, (880, y), f"paper {paper_label(report, key)}", 33, BLUE)
+    txt(d, (68, 722), "InterpA is inflated: the synthesizer directly searches discovery slice 00.", 27, RED)
+    broad, n = broad_fraction(pilot_records)
+    if n:
+        txt(d, (68, 766), f"{100 * broad / n:.1f}% of cone passers have coverage > {100 * BROAD_COV:.0f}%: mostly broad class/window gates.", 25, DIM)
+    txt(d, (68, 812), f"corpus: {corpus} · all verdicts, including noise-floor weights; ± binomial SEM", 24, DIM)
+    txt(d, (68, 849), "Fig. 5 null-cone reading is not a matched replication; random-null rules expose the tension.", 24, DIM)
     save(image, out, "headline.png")
 
 
@@ -113,22 +140,25 @@ def layers_bins(report, out):
         rows = report[key]
         ax.set_facecolor(BG)
         x = np.arange(len(rows))
-        values = [100 * r["robust"]["rate"] if r["robust"]["rate"] is not None else np.nan for r in rows]
-        errors = [100 * r["robust"]["sem"] if r["robust"]["sem"] is not None else 0 for r in rows]
-        ax.bar(x, values, yerr=errors, color=GREEN, capsize=4, width=.65)
+        for j, (rule, name, color) in enumerate(RULES):
+            values = [100 * r[rule]["rate"] if r[rule]["rate"] is not None else np.nan for r in rows]
+            errors = [100 * r[rule]["sem"] if r[rule]["sem"] is not None else 0 for r in rows]
+            ax.bar(x + (j - 1) * .25, values, yerr=errors, color=color, capsize=3, width=.23, label=name)
         ax.set_xticks(x, [str(r[label]) for r in rows], rotation=25 if label == "bin" else 0)
-        ax.set_ylim(0, max(100, max((a + b for a, b in zip(values, errors) if not math.isnan(a)), default=100) * 1.15))
-        ax.set_ylabel("robust passing weights (%) ± SEM")
+        high = max((100 * (r[k]["rate"] + r[k]["sem"]) for r in rows for k, _, _ in RULES
+                    if r[k]["rate"] is not None), default=1)
+        ax.set_ylim(0, high * 1.45)
+        ax.set_ylabel("passing weights (%) ± SEM")
         ax.set_title("by layer" if label == "layer" else "by |ΔCE| per token (paper bins)", color=TEXT, pad=24)
         for i, r in enumerate(rows):
-            ax.text(i, 3, f"n={r['n']}", rotation=90 if label == "layer" else 0,
-                    fontsize=11, ha="center", va="bottom", color=TEXT)
-            if r["robust"]["rate"] is None:
-                ax.text(i, 20, "no data", rotation=90, ha="center", color=DIM)
+            ax.text(i, high * 1.25, f"n={r['n']}", rotation=90 if label == "layer" else 0,
+                    fontsize=11, ha="center", va="bottom", color=DIM)
         ax.spines[["top", "right"]].set_visible(False)
         ax.grid(axis="y", alpha=.15)
-    fig.suptitle(f"{report['model']} · robust interpretation is a held-out test", fontsize=26, y=.95)
-    fig.text(.065, .035, "denominators: pilot report per-group n; error bars: binomial SEM; no LLM calls", color=DIM)
+    fig.suptitle(f"{report['model']} · same scores, three robust rules", fontsize=26, y=.95)
+    fig.text(.065, .035, "denominators: uniform-pilot per-group n; error bars: binomial SEM; no LLM calls", color=DIM)
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(.5, .895), ncol=3, frameon=False)
     fig.subplots_adjust(left=.07, right=.97, bottom=.15, top=.83, wspace=.3)
     path = out / "layers_bins.png"
     fig.savefig(path, facecolor=BG)
@@ -162,7 +192,7 @@ def case_study(records, weights, out):
     d = ImageDraw.Draw(image)
     passed = sum(bool(r.get("robust", {}).get("pass")) for r in rows)
     txt(d, (70, 48), "NEURON 1863: THE DIGIT DETECTOR", 57, bold=True)
-    txt(d, (73, 125), f"csp_yolo1 · layer 0 · {len(rows)} scored weights · {passed} robust pass · no LLM calls", 32, GREEN)
+    txt(d, (73, 125), f"csp_yolo1 · layer 0 · {len(rows)} scored weights · {passed} strict-null passes · no LLM calls", 32, GREEN)
     # Small orientation diagram; counts refer only to the displayed, measured weights.
     for x, label in ((150, f"{len(columns[0])} input weights"), (970, "neuron 1863"), (1790, f"{len(columns[1])} output weights")):
         d.rounded_rectangle((x, 215, x + 430, 320), radius=18, fill=PANEL, outline=BLUE, width=2)
@@ -170,7 +200,7 @@ def case_study(records, weights, out):
     for start, end in ((580, 970), (1400, 1790)):
         d.line((start, 267, end, 267), fill=GREEN, width=5)
         d.polygon(((end, 267), (end - 20, 256), (end - 20, 278)), fill=GREEN)
-    txt(d, (70, 350), "cov = discovery coverage; A/B = exact scores; R = held-out mean ± SEM; P/F = each test's pass/fail", 29, DIM)
+    txt(d, (70, 350), "cov = discovery coverage; A/B = scores (P/F); R = mean ± SEM; PASS/FAIL = strict random-null rule", 29, DIM)
     for col, records_col in enumerate(columns):
         x = 70 + col * 1180
         txt(d, (x, 400), "c_fc[1863, input]" if col == 0 else "c_proj[output, 1863]", 33, BLUE, mono=True)
@@ -217,10 +247,11 @@ def draw_context(draw, ctx, x, y, width):
 
 
 def predicate_gallery(records, weights, runs, corpus_path, out, n):
-    selected = sorted((r for r in records.values() if (r.get("robust") or {}).get("pass")),
-                      key=lambda r: (-r["robust"]["mean"], r["wid"]))[:n]
+    selected = sorted((r for r in records.values() if robust_rules(r)["pass"]
+                       and 0 < (r.get("A") or {}).get("cov", 0) <= GALLERY_MAX_COV),
+                      key=lambda r: (-abs(r.get("dce") or 0), r["wid"]))[:n]
     if not selected:
-        skip("predicate_gallery.png", "no robust-passing score records")
+        skip("predicate_gallery.png", f"no cone-pass records with coverage <= {GALLERY_MAX_COV}")
         return
     vocab = json_read(runs / "vocab.json")
     if vocab is None or not corpus_path.is_file() or not (runs / "profiles").is_dir():
@@ -235,7 +266,7 @@ def predicate_gallery(records, weights, runs, corpus_path, out, n):
             print(f"[launch] no profile context for wid {r['wid']}; omitting gallery card")
             continue
         lines = source_lines(r["py"], 49)
-        cards.append((r, lines, contexts[0], max(430, 240 + len(lines) * 29 + 150)))
+        cards.append((r, lines, contexts[0], max(465, 275 + len(lines) * 29 + 150)))
     if not cards:
         skip("predicate_gallery.png", "no measured contexts for robust-passing weights")
         return
@@ -243,7 +274,8 @@ def predicate_gallery(records, weights, runs, corpus_path, out, n):
     image = Image.new("RGB", (1600, 215 + sum(h + 25 for h in row_heights)), BG)
     d = ImageDraw.Draw(image)
     txt(d, (55, 40), "PREDICATES YOU CAN RUN", 53, bold=True)
-    txt(d, (57, 115), f"top {len(cards)} available robust passes · sorted by held-out mean · focus token in green", 25, GREEN)
+    txt(d, (57, 115), f"top {len(cards)} narrow cone passes · cov ≤ {100 * GALLERY_MAX_COV:.0f}% · sorted by |ΔCE| · green focus token", 25, GREEN)
+    txt(d, (57, 149), "selected narrow exceptions, not the distribution of cone passers; raw scores are not clipped", 21, DIM)
     y = 183
     for pair, height in zip(range(0, len(cards), 2), row_heights):
         for col, (r, lines, ctx, _) in enumerate(cards[pair:pair + 2]):
@@ -253,9 +285,12 @@ def predicate_gallery(records, weights, runs, corpus_path, out, n):
             identity = f"L{int(weights['layer'][wid])} {'fc' if weights['matrix'][wid] == 0 else 'proj'}[{int(weights['row'][wid])},{int(weights['col'][wid])}] · wid {wid}"
             txt(d, (x + 20, y + 18), identity, 26, BLUE, mono=True, bold=True)
             rob = r["robust"]
-            txt(d, (x + 20, y + 62), f"robust {rob['mean']:.3f} ± {rob['sem']:.3f} SEM · PASS", 25, GREEN)
+            txt(d, (x + 20, y + 62), f"held-out mean {rob['mean']:.3f} ± {rob['sem']:.3f} SEM", 25, GREEN)
             txt(d, (x + 20, y + 99), f"A {r['A']['score']:.3f} · B {r['B']['score']:.3f} · cov {100 * r['A']['cov']:.2f}%", 24, DIM)
-            yy = y + 151
+            verdicts = robust_rules(r)
+            txt(d, (x + 20, y + 137), " · ".join(f"{name} {'PASS' if verdicts[key] else 'FAIL'}"
+                for key, name in (("pass", "cone"), ("pass_null_mean", "null mean"), ("pass_strict", "strict"))), 23, BLUE)
+            yy = y + 185
             for line in lines:
                 txt(d, (x + 20, yy), line, 22, mono=True)
                 yy += 29
@@ -266,46 +301,54 @@ def predicate_gallery(records, weights, runs, corpus_path, out, n):
     save(image, out, "predicate_gallery.png")
 
 
-def thread(report, records, neuron, receipt, manifest, out):
+def thread(report, pilot_records, neuron, receipt, manifest, out):
     posts = []
-    if receipt:
-        posts.append(f"the receipt: {receipt['mlp weights']:,} nonzero mlp weights in {manifest['model']}. "
-                     "ablate each weight, search for an executable predicate, then test it. no llm calls in the interpretation loop. "
-                     "the atlas target is the whole model; the measured subset is below.")
-    else:
-        posts.append("a weight atlas, not a collection of llm explanations. ablate a weight, search for an executable predicate, then test it. no llm calls in the interpretation loop. measured results below; {repo_url}")
-    posts.append("method: ablate → synthesize → exact held-out test. the predicate controls where a single weight is restored. "
-                 "enumerative rust search proposes code; exact conditional-zero cross-entropy scores what that code preserves and removes.")
     if report:
         rates = report["rates"]["over_verdicts"]
-        parts = []
-        for key, label in (("interpA", "interpa"), ("interpB", "interpb"), ("robust", "robust")):
-            if rates[key]["rate"] is not None:
-                parts.append(f"{label} {100 * rates[key]['rate']:.1f}% ± {100 * rates[key]['sem']:.1f}% sem")
-        if parts:
-            posts.append(f"uniform pilot: n={rates['robust']['n']:,} weights with verdicts. " + "; ".join(parts) +
-                         ". denominator includes noise-floor and no-candidate weights. this is not a matched replication.")
-            posts.append("paper table 1, gao model: " + "; ".join(f"{label} {100 * report['paper'][key]:.1f}%" for key, label in (("interpA", "interpa"), ("interpB", "interpb"), ("robust", "robust"))) + ". our predicates, corpus, selection and robust null differ.")
+        posts.append(f"zero-llm search matches the paper's headline under our reading of its test: "
+                     f"{100 * rates['robust']['rate']:.1f}% vs {100 * report['paper']['robust']:.1f}%. "
+                     f"but against a coverage-matched random null: {100 * rates['robust_beats_null_mean']['rate']:.1f}%; "
+                     f"strict null: {100 * rates['robust_strict']['rate']:.1f}%. that tension is the result.")
+        posts.append(f"receipt: {receipt['mlp weights']:,} nonzero mlp weights in {report['model']}. "
+                     f"uniform pilot: {report['n_sampled']:,} weights. cone rate {rate_label(rates['robust']).lower()}; "
+                     f"paper {paper_label(report, 'robust')}. this is not a matched replication.")
     else:
-        posts.append("the uniform pilot report is not available yet. no whole-model interpretation rate is being claimed. "
-                     "the digit-neuron case study is real; it is a selected example, not a random sample.")
+        posts.append("a weight atlas, not llm explanations. no pilot report yet; no whole-model rate claimed. executable predicates, exact tests, measured case study below.")
+    posts.append("method: ablate → synthesize → exact held-out test. the predicate controls where a single weight is restored. "
+                 "rust enumerative search proposes code; exact conditional-zero cross-entropy tests what it preserves and removes. no llm calls.")
+    if report:
+        posts.append(f"interpa {rate_label(rates['interpA']).lower()} vs paper {100 * report['paper']['interpA']:.1f}%; "
+                     f"interpb {rate_label(rates['interpB']).lower()} vs {100 * report['paper']['interpB']:.1f}%. "
+                     "interpa is inflated: the synthesizer directly searches the discovery slice. held-out tests matter.")
+        broad, cone_n = broad_fraction(pilot_records)
+        if cone_n:
+            posts.append(f"{broad}/{cone_n} cone-passing predicates ({100 * broad / cone_n:.1f}%) have coverage > {100 * BROAD_COV:.0f}%. "
+                         "most passes are broad class/window gates, like a recent token being alphabetic. the narrow predicate gallery is a selected exception, not the distribution.")
+        posts.append(f"cone: mean ≥ {report['paper']['T']} and mean − 2·sem > 0. "
+                     "random-null mean: the lower bound also beats a coverage-matched random mask's mean. "
+                     "strict null: it beats that mean + 2·sd. same scores, different robustness claims.")
+        high = next(r for r in report["per_bin"] if r["bin"] == ">=1e-4")
+        posts.append(f"high-impact bin |δce| {high['bin']}: {high['robust']['k']}/{high['n']} cone passes "
+                     f"({100 * high['robust']['rate']:.1f}%). the paper calls this roughly a quarter. "
+                     "a local high-impact result still does not establish narrow explanations for most weights.")
     if neuron:
-        # Neuron id is derived from the actual selected records' weight metadata in main.
-        neuron_id = neuron[0]["_neuron"]
         passed = sum(bool((r.get("robust") or {}).get("pass")) for r in neuron)
-        posts.append(f"the paper's digit detector, neuron {neuron_id}: {len(neuron)} scored input/output weights, {passed} robust passes. "
-                     "the passing predicates test whether the current token is digit-only. executable source, coverage and held-out scores are in the image.")
-    if records:
-        passed = sum(bool((r.get("robust") or {}).get("pass")) for r in records.values())
-        posts.append(f"available score files: {len(records)} weights, {passed} robust passes. selected case-study files are not evidence for a whole-model rate. "
-                     "a high raw score alone is not a robust pass: it must beat the coverage-matched null.")
-    posts.append(f"corpus: {manifest['source']}. slices are repo-exclusive, one file per repo, "
-                 f"at most {manifest['max_doc_tokens']} tokens per document. "
-                 f"{manifest['n_seq'] * manifest['T']:,} positions per slice. this is a different corpus budget from the paper.")
-    posts.append("honest limits: fixed causal grammar, not llm hypotheses; train/validation discovery split; coverage-penalized candidate selection, "
-                 "not plain argmax; our coverage-matched random robust null. the readme records the deviations.")
-    posts.append("browse the atlas and inspect the code, scores and contexts: {site_url}\nreproduce it: {repo_url}")
-    quote = "@Arnauya @sheimersheim this pushed me to build the executable version: single-weight ablations → rust predicate search → exact held-out tests. no llm calls in the interpretation loop. real digit-neuron results; whole-model claims wait for the run. {repo_url}"
+        posts.append(f"the paper's digit detector, neuron {neuron[0]['_neuron']}: {len(neuron)} scored input/output weights, "
+                     f"{passed} strict-null passes. those passing predicates test the current token for digits. "
+                     "the image keeps executable source, coverage and exact scores beside each weight.")
+    posts.append(f"corpus: {manifest['source']}. repo-exclusive slices; one file per repo; "
+                 f"at most {manifest['max_doc_tokens']} tokens per document; {manifest['n_seq'] * manifest['T']:,} positions per slice. "
+                 "different corpus budget from the paper.")
+    posts.append("honest limits: fixed causal grammar, not llm hypotheses; discovery train/validation split; coverage-penalized candidate selection, "
+                 "not plain argmax. null-cone reading and both coverage-matched alternatives are explicit. deviations are in the readme.")
+    posts.append("browse predicates, scores and contexts: {site_url}\\nreproduce it: {repo_url}")
+    if report:
+        quote = (f"@Arnauya @sheimersheim zero-llm search reaches {100 * rates['robust']['rate']:.1f}% vs the paper's "
+                 f"{100 * report['paper']['robust']:.1f}% under its null-cone test. but most predicates are broad; "
+                 f"random-null mean {100 * rates['robust_beats_null_mean']['rate']:.1f}%, strict null "
+                 f"{100 * rates['robust_strict']['rate']:.1f}%. executable code + exact tests: {{repo_url}}")
+    else:
+        quote = "@Arnauya @sheimersheim executable single-weight interpretations: rust predicate search, exact held-out tests, no llm calls. measured digit-neuron case study, not a whole-model rate. {repo_url}"
     for i, post in enumerate(posts):
         if len(post) > 280:
             raise ValueError(f"post {i + 1} exceeds 280 characters ({len(post)})")
@@ -441,9 +484,10 @@ def main():
     runs = ROOT / "runs" / args.model
     corpus_root = ROOT / "data" / args.model
     manifest = json_read(corpus_root / "manifest.json")
+    pilot_records = load_scores(runs, Path(report["scores_dir"])) if report else {}
     if report:
         corpus = manifest["source"] if manifest else "corpus manifest unavailable"
-        headline(report, corpus, args.out)
+        headline(report, corpus, args.out, pilot_records)
         layers_bins(report, args.out)
     else:
         for name in ("headline.png", "layers_bins.png"):
@@ -464,11 +508,12 @@ def main():
             neuron = case_study(case_records, weights, args.out)
             for r in neuron:
                 r["_neuron"] = int(weights["row" if weights["matrix"][r["wid"]] == 0 else "col"][r["wid"]])
-            predicate_gallery(records, weights, runs, corpus_root / "slice_00.npy", args.out, args.top_n)
+            gallery_records = records if args.scores_dirs else pilot_records or records
+            predicate_gallery(gallery_records, weights, runs, corpus_root / "slice_00.npy", args.out, args.top_n)
     else:
         skip("casestudy_1863.png / predicate_gallery.png", f"weight metadata absent: {weights_path}")
     if manifest:
-        thread(report, records, neuron, json_read(ROOT / "assets" / f"{args.model}_param_receipt.json"), manifest, args.out)
+        thread(report, pilot_records, neuron, json_read(ROOT / "assets" / f"{args.model}_param_receipt.json"), manifest, args.out)
     else:
         skip("thread.md", "corpus manifest absent; cannot substantiate model/corpus claims")
     if not args.skip_tour:

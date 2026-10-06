@@ -323,15 +323,16 @@ def _robust_cone(r: Dict[str, Any]) -> bool:
 
 
 def _robust_beats_null_mean(r: Dict[str, Any]) -> bool:
-    """Cone rule, and the lower 2-SEM bound also beats a coverage-matched random mask's mean."""
+    """Cone rule AND the lower 2-SEM bound beats a coverage-matched random mask's mean."""
     p = _robust_parts(r)
-    return bool(p and p[2] is not None and p[0] >= ROBUST_T and p[0] - 2 * p[1] > p[2])
+    return bool(p and p[2] is not None and _robust_cone(r) and p[0] - 2 * p[1] > p[2])
 
 
 def _robust_pass(r: Dict[str, Any]) -> bool:
-    """Strict rule stored in score records: also clears the random mask's mean + 2 SD."""
+    """Cone rule AND the strict rule stored in score records (clears the random mask's
+    mean + 2 SD)."""
     rob = r.get("robust") or {}
-    return bool(rob.get("pass"))
+    return bool(_robust_cone(r) and rob.get("pass"))
 
 
 def _bin_of(dce: Optional[float]) -> Optional[int]:

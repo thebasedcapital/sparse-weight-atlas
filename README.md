@@ -76,7 +76,7 @@ The existing `swa-full` unit is not switched, stopped, or restarted by this opt-
 ```bash
 .venv/bin/python scripts/make_launch.py \
   --pilot-report runs/csp_yolo1/pilot/report.json \
-  --scores-dirs runs/csp_yolo1/scores_casestudy runs/csp_yolo1/scores_pilot
+  --scores-dirs runs/csp_yolo1/scores_pilot
 ```
 
 Writes measured stills, a draft X thread, and a ≤30-second 1600×900 browser tour under `assets/launch/`.
@@ -84,7 +84,23 @@ Missing pilot results skip `headline.png` and `layers_bins.png` with an explicit
 diagram and predicate gallery use existing score files and read-only profile contexts. `--top-n` selects
 the gallery size and `--skip-tour` regenerates only images/text. Rendering requires Pillow, matplotlib,
 and NumPy; the tour requires `playwright` with Chromium (`.venv/bin/playwright install chromium`) and ffmpeg.
+The headline and layer/bin chart compare all three robust rules. The gallery selects cone-passing predicates
+with discovery coverage ≤0.1, ordered by |ΔCE|, from the specified score directories (pilot by default).
+These narrow examples are deliberately not representative of the broader passing-predicate distribution.
+The neuron-1863 diagram always comes from the separate case-study scores and labels its strict-null verdicts.
 It serves `site/` on an ephemeral localhost port and closes the server/browser afterwards; no GPU is used.
 Real site exports carry score-directory and timestamp provenance. Unprovenanced model data is excluded;
 if only a labeled fixture can supply a passing card, the recording is named `site_tour_fixture.mp4`.
 The thread distinguishes a selected case study from the uniform pilot and never invents a missing rate.
+
+To update the real atlas and annotated model with both measured subsets (pilot wins duplicate weights):
+
+```bash
+PYTHONPATH=engine .venv/bin/python -m swa.export_site --model csp_yolo1 \
+  --scores-dirs runs/csp_yolo1/scores_casestudy runs/csp_yolo1/scores_pilot
+PYTHONPATH=engine .venv/bin/python -m swa.export_modelpy --model csp_yolo1 \
+  --scores-dirs runs/csp_yolo1/scores_casestudy runs/csp_yolo1/scores_pilot
+```
+
+The combined atlas rates describe its exported verdicts, including selected case-study weights;
+only the uniform pilot's report is used for the launch's paper comparison.

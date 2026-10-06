@@ -7,7 +7,7 @@ Usage:
 Reads:
     runs/<model>/weights.npz            (layer, matrix, row, col, value arrays; index = wid)
     runs/<model>/vocab.json             {"tokens": [...], "classes": {...}}
-    runs/<model>/scores/*.jsonl         per-wid score records (or --scores-dir)
+    runs/<model>/scores/*.jsonl         per-wid score records (or --scores-dir / --scores-dirs)
     runs/<model>/profiles/<shard>/      wid.npy, indptr/pos/dce/kl CSR, dce_total, kl_total
     data/<model>/slice_00.npy           uint16 [n_seq, 257] discovery tokens
 
@@ -26,6 +26,12 @@ import numpy as np
 
 MATRIX_NAMES = ("c_fc", "c_proj")
 STATUSES = ("scored", "noise_floor", "no_candidate", "unscored")
+VERDICT_STATUSES = ("scored", "noise_floor", "no_candidate")
+ROBUST_COUNT_FIELDS = {
+    "pass": "robust_pass",
+    "pass_null_mean": "robust_beats_null_mean",
+    "pass_strict": "robust_strict",
+}
 PAPER_ROBUST_RATE = 0.15
 PAPER_INTERPA_RATE = 0.373
 PAPER_INTERPB_RATE = 0.353
@@ -37,21 +43,67 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def load_scores(runs_dir: Path, scores_dir: Path | None = None) -> dict:
-    """Merge every <scores-dir>/<shard>.jsonl into wid -> record."""
+def score_directories(runs_dir: Path, scores_dir: Path | None = None,
+                      scores_dirs: list[Path] | None = None) -> list[Path]:
+    """Resolve score sources in precedence order; later directories win."""
+    if scores_dir is not None and scores_dirs is not None:
+        raise ValueError("scores_dir and scores_dirs are mutually exclusive")
+    if scores_dirs is not None:
+        return [Path(directory) for directory in scores_dirs]
+    return [Path(scores_dir) if scores_dir is not None else runs_dir / "scores"]
+
+
+def load_scores(runs_dir: Path, scores_dir: Path | None = None,
+                scores_dirs: list[Path] | None = None) -> dict:
+    """Merge score JSONL shards by wid, with later directories taking precedence."""
     scores = {}
-    sdir = scores_dir if scores_dir is not None else runs_dir / "scores"
-    if not sdir.is_dir():
-        return scores
-    for path in sorted(sdir.glob("*.jsonl")):
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                rec = json.loads(line)
-                scores[int(rec["wid"])] = rec
+    for directory in score_directories(runs_dir, scores_dir, scores_dirs):
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.jsonl")):
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    rec = json.loads(line)
+                    scores[int(rec["wid"])] = rec
     return scores
+
+
+def score_provenance(directories: list[Path]) -> dict:
+    return {
+        "kind": "pipeline_export",
+        "scores_dirs": [str(directory.resolve()) for directory in directories],
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "merge_precedence": "later directories win",
+        "scope": "merged score verdicts; not necessarily a uniform sample",
+    }
+
+
+def robust_rules(record: dict | None) -> dict:
+    """Derive the three export rules from numeric scores, without changing raw records."""
+    rob = (record or {}).get("robust") or {}
+    mean, sem = rob.get("mean"), rob.get("sem")
+    null_mean, null_sd = rob.get("null_mean"), rob.get("null_sd")
+    lower = mean - 2 * sem if mean is not None and sem is not None else None
+    above_bar = mean is not None and mean >= 0.75 and lower is not None
+    cone = bool(above_bar and lower > 0)
+    return {
+        "pass": cone,
+        "pass_null_mean": bool(cone and null_mean is not None and lower > null_mean),
+        "pass_strict": bool(above_bar and null_mean is not None and null_sd is not None
+                            and lower > null_mean + 2 * null_sd),
+    }
+
+
+def robust_rates(counts: dict, verdicts: int) -> dict:
+    """All rule rates share the scored + noise-floor + no-candidate denominator."""
+    return {
+        "robust": counts["robust_pass"] / verdicts if verdicts else None,
+        "robust_beats_null_mean": counts["robust_beats_null_mean"] / verdicts if verdicts else None,
+        "robust_strict": counts["robust_strict"] / verdicts if verdicts else None,
+    }
 
 
 class ProfileIndex:
@@ -107,9 +159,10 @@ class ProfileIndex:
         return out
 
 
-def interp_rate(recs):
-    """Paper rate: score >= 0.75 and 0 < cov <= 0.5, over the given records."""
-    if not recs:
+def interp_rate(recs, verdicts: int | None = None):
+    """Paper rule rate, optionally over all verdicts rather than only metric records."""
+    denominator = len(recs) if verdicts is None else verdicts
+    if not denominator:
         return None
     n = 0
     for r in recs:
@@ -117,11 +170,12 @@ def interp_rate(recs):
         cov = r.get("cov")
         if s is not None and cov is not None and s >= 0.75 and 0 < cov <= 0.5:
             n += 1
-    return n / len(recs)
+    return n / denominator
 
 
 def export_model(model: str, runs: Path, data: Path, out: Path,
-                 scores_dir: Path | None = None) -> dict:
+                 scores_dir: Path | None = None,
+                 scores_dirs: list[Path] | None = None) -> dict:
     runs_dir, data_dir = runs / model, data / model
     out_dir = out / model
     (out_dir / "w").mkdir(parents=True, exist_ok=True)
@@ -131,7 +185,8 @@ def export_model(model: str, runs: Path, data: Path, out: Path,
                                       npz["col"], npz["value"])
     W = len(layer)
 
-    scores = load_scores(runs_dir, scores_dir)
+    directories = score_directories(runs_dir, scores_dir, scores_dirs)
+    scores = load_scores(runs_dir, scores_dirs=directories)
     profiles = ProfileIndex(runs_dir)
 
     tokens = None
@@ -148,11 +203,12 @@ def export_model(model: str, runs: Path, data: Path, out: Path,
     layer_rows = [[] for _ in range(n_layers)]
     buckets = {}  # bucket id -> {wid: card}
     counts = {s: 0 for s in STATUSES}
-    robust_pass = 0
+    rule_counts = {field: 0 for field in ROBUST_COUNT_FIELDS.values()}
     a_recs, b_recs = [], []
     bin_edges = [1e-6, 1e-5, 1e-4]
     bin_labels = ["<1e-6", "1e-6..1e-5", "1e-5..1e-4", ">=1e-4"]
-    bins = [{"bin": b, "total": 0, "pass": 0} for b in bin_labels]
+    bins = [{"bin": b, "total": 0, "verdicts": 0,
+             **{field: 0 for field in ROBUST_COUNT_FIELDS}} for b in bin_labels]
 
     for wid in range(W):
         L = int(layer[wid]); m = int(matrix[wid])
@@ -165,8 +221,9 @@ def export_model(model: str, runs: Path, data: Path, out: Path,
             spec, py, desc = rec.get("spec"), rec.get("py"), rec.get("desc")
             A, B, rob = rec.get("A"), rec.get("B"), rec.get("robust")
         counts[status] += 1
-        passed = bool(rob and rob.get("pass"))
-        robust_pass += passed
+        rules = robust_rules(rec)
+        for field, count_field in ROBUST_COUNT_FIELDS.items():
+            rule_counts[count_field] += rules[field]
         if A:
             a_recs.append(A)
         if B:
@@ -175,20 +232,22 @@ def export_model(model: str, runs: Path, data: Path, out: Path,
             adce = abs(dce)
             bi = 0 if adce < bin_edges[0] else 1 if adce < bin_edges[1] else 2 if adce < bin_edges[2] else 3
             bins[bi]["total"] += 1
-            bins[bi]["pass"] += passed
+            bins[bi]["verdicts"] += status in VERDICT_STATUSES
+            for field in ROBUST_COUNT_FIELDS:
+                bins[bi][field] += rules[field]
 
         score_mean = rob.get("mean") if rob else None
         layer_rows[L].append({
             "wid": wid, "matrix": m, "row": int(row[wid]), "col": int(col[wid]),
             "value": float(value[wid]), "dce": dce, "status": status,
-            "score_robust_mean": score_mean, "pass": passed, "desc": desc,
+            "score_robust_mean": score_mean, **rules, "desc": desc,
         })
 
         card = {
             "wid": wid, "layer": L, "matrix": m, "matrix_name": MATRIX_NAMES[m],
             "row": int(row[wid]), "col": int(col[wid]), "value": float(value[wid]),
             "status": status, "dce": dce, "spec": spec, "py": py, "desc": desc,
-            "A": A, "B": B, "robust": rob,
+            "A": A, "B": B, "robust": rob, **rules,
         }
         if status == "unscored" or profiles.loc.get(wid) is None:
             card["contexts"] = []
@@ -203,11 +262,16 @@ def export_model(model: str, runs: Path, data: Path, out: Path,
         (out_dir / f"layer_{L:02d}.json").write_text(
             json.dumps({"layer": L, "n": len(rows), "w": rows},
                        separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
-        per_layer.append({
+        table = {
             "layer": L, "total": len(rows),
             **{s: sum(1 for r in rows if r["status"] == s) for s in STATUSES},
-            "pass": sum(1 for r in rows if r["pass"]),
-        })
+            **{field: sum(r[field] for r in rows) for field in ROBUST_COUNT_FIELDS},
+        }
+        table["verdicts"] = sum(table[status] for status in VERDICT_STATUSES)
+        table.update({count_field: table[field]
+                      for field, count_field in ROBUST_COUNT_FIELDS.items()})
+        table["rates"] = robust_rates(table, table["verdicts"])
+        per_layer.append(table)
 
     # ---- write bucket files ----
     for b, cards in buckets.items():
@@ -218,29 +282,30 @@ def export_model(model: str, runs: Path, data: Path, out: Path,
     # ---- summary ----
     scored = counts["scored"]
     verdicted = scored + counts["noise_floor"] + counts["no_candidate"]
-    interp_a = interp_rate(a_recs)
-    interp_b = interp_rate(b_recs)
+    interp_a = interp_rate(a_recs, verdicted)
+    interp_b = interp_rate(b_recs, verdicted)
+    for table in bins:
+        table.update({count_field: table[field]
+                      for field, count_field in ROBUST_COUNT_FIELDS.items()})
+        table["rates"] = robust_rates(table, table["verdicts"])
     summary = {
         "model": model,
-        "provenance": {
-            "kind": "pipeline_export",
-            "scores_dir": str((scores_dir if scores_dir is not None else runs_dir / "scores").resolve()),
-            "exported_at": datetime.now(timezone.utc).isoformat(),
-        },
+        "provenance": score_provenance(directories),
         "counts": {
-            "total": W, "scored": scored,
+            "total": W, "scored": scored, "verdicts": verdicted,
             "noise_floor": counts["noise_floor"],
             "no_candidate": counts["no_candidate"],
             "unscored": counts["unscored"],
-            "robust_pass": robust_pass,
+            **rule_counts,
         },
         "rates": {
             # paper protocol: denominator = weights with a verdict (excludes unscored)
-            "robust": (robust_pass / verdicted) if verdicted else None,
-            "robust_of_total": (robust_pass / W) if W else None,
+            **robust_rates(rule_counts, verdicted),
+            "robust_of_total": (rule_counts["robust_pass"] / W) if W else None,
             "interpA": interp_a,
             "interpB": interp_b,
         },
+        "rate_denominator": "verdicts = scored + noise_floor + no_candidate",
         "paper": {"robust": PAPER_ROBUST_RATE, "interpA": PAPER_INTERPA_RATE,
                   "interpB": PAPER_INTERPB_RATE, "T": 0.75, "c": 0.5},
         "per_layer": per_layer,
@@ -272,9 +337,11 @@ def main():
     ap.add_argument("--runs", default=None, help="default: <root>/runs")
     ap.add_argument("--data", default=None, help="default: <root>/data")
     ap.add_argument("--out", default=None, help="default: <root>/site/data")
-    ap.add_argument("--scores-dir", default=None,
-                    help="directory of <shard>.jsonl score records "
-                         "(default: <runs>/<model>/scores), e.g. runs/<model>/scores_pilot")
+    score_args = ap.add_mutually_exclusive_group()
+    score_args.add_argument("--scores-dir", default=None,
+                            help="one directory of score JSONL shards (default: <runs>/<model>/scores)")
+    score_args.add_argument("--scores-dirs", nargs="+", default=None,
+                            help="score directories to merge in order; later directories win")
     args = ap.parse_args()
 
     runs = Path(args.runs) if args.runs else Path(args.root) / "runs"
@@ -282,12 +349,17 @@ def main():
     out = Path(args.out) if args.out else Path(args.root) / "site" / "data"
 
     scores_dir = Path(args.scores_dir) if args.scores_dir else None
-    summary = export_model(args.model, runs, data, out, scores_dir=scores_dir)
+    scores_dirs = [Path(directory) for directory in args.scores_dirs] if args.scores_dirs else None
+    summary = export_model(args.model, runs, data, out,
+                           scores_dir=scores_dir, scores_dirs=scores_dirs)
     c = summary["counts"]
     print(f"[export_site] {args.model}: total={c['total']} scored={c['scored']} "
           f"noise_floor={c['noise_floor']} no_candidate={c['no_candidate']} "
-          f"unscored={c['unscored']} robust_pass={c['robust_pass']} "
-          f"({(summary['rates']['robust'] or 0) * 100:.2f}% vs paper {PAPER_ROBUST_RATE * 100:.1f}%)")
+          f"unscored={c['unscored']} verdicts={c['verdicts']} "
+          f"robust_pass={c['robust_pass']} robust_beats_null_mean={c['robust_beats_null_mean']} "
+          f"robust_strict={c['robust_strict']} "
+          f"(cone={(summary['rates']['robust'] or 0) * 100:.2f}% of merged verdicts; "
+          f"not necessarily a uniform sample)")
     print(f"[export_site] wrote {out / args.model}")
 
 

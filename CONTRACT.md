@@ -149,9 +149,21 @@ mask (same per-slice coverage, fixed seed). Three rules are reported (`swa.pilot
 
 ### Site data — `site/data/`
 `summary.json` (counts, rates, per-layer/per-bin tables), `layer_{LL}.json` (compact per-weight rows for the grid:
-wid, matrix, row, col, value, dce, status, score_robust_mean, pass, desc), `w/{wid//1000}.json` (full cards for
-1000 wids: spec, py, desc, A, B, robust, top 3 contexts each as ±8 decoded tokens with the focus index and
-dce/kl at focus).
+wid, matrix, row, col, value, dce, status, score_robust_mean, pass, pass_null_mean, pass_strict, desc),
+`w/{wid//1000}.json` (full cards for 1000 wids: spec, py, desc, A, B, robust, the same three top-level
+rule booleans, top 3 contexts each as ±8 decoded tokens with the focus index and dce/kl at focus).
+Exported `pass` is the headline cone rule; `pass_null_mean` also beats the null mean; `pass_strict` clears
+the null mean + 2 SD. Every rule includes the mean ≥ 0.75 gate. These booleans are derived from numeric
+score fields; full cards retain the original `robust` record, whose `pass` is strict, without mutation.
+Summary counts use `robust_pass`, `robust_beats_null_mean`, `robust_strict`; rates use `robust`,
+`robust_beats_null_mean`, `robust_strict`. These rates and InterpA/B divide by all verdicts
+(`scored + noise_floor + no_candidate`), excluding only unscored weights. Per-layer/per-bin tables expose
+the three rule counts, their rates, and explicit verdict denominators; their existing `pass` count is cone.
+Provenance identifies `kind=pipeline_export`, all `scores_dirs` in merge order, and `exported_at` (UTC).
+Both exporters accept either `--scores-dir` or `--scores-dirs DIR [DIR ...]`; later directories win by wid.
+Merged exports need not be uniform samples: the pure uniform-pilot report remains the headline comparison.
+Annotated `model.py` uses the same counts/rates/provenance and verdict denominator, with unchanged
+`(wid, row, col, value, predicate_source_or_None, description_or_None)` tuples.
 
 ## Validation gates (owners must run their own gate once at the end of their slice)
 - **G1 engine exactness:** for ≥6 weights (both matrices, first/middle/last layer, both models): replay CE equals a

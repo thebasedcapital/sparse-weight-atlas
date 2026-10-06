@@ -2,41 +2,52 @@
 
 draft only; link placeholders must be replaced before posting.
 
-## post 1 (232 chars)
+## post 1 (189 chars)
 
-the receipt: 393,216 nonzero mlp weights in csp_yolo1. ablate each weight, search for an executable predicate, then test it. no llm calls in the interpretation loop. the atlas target is the whole model; the measured subset is below.
+zero-llm search matches the paper's headline under our reading of its test: 17.3% vs 15.0%. but against a coverage-matched random null: 14.1%; strict null: 1.8%. that tension is the result.
 
-## post 2 (229 chars)
+## post 2 (163 chars)
 
-method: ablate → synthesize → exact held-out test. the predicate controls where a single weight is restored. enumerative rust search proposes code; exact conditional-zero cross-entropy scores what that code preserves and removes.
+receipt: 393,216 nonzero mlp weights in csp_yolo1. uniform pilot: 1,024 weights. cone rate 17.3% ± 1.2% sem; paper 15.0% ± 1.7%. this is not a matched replication.
 
-## post 3 (183 chars)
+## post 3 (235 chars)
 
-the uniform pilot report is not available yet. no whole-model interpretation rate is being claimed. the digit-neuron case study is real; it is a selected example, not a random sample.
+method: ablate → synthesize → exact held-out test. the predicate controls where a single weight is restored. rust enumerative search proposes code; exact conditional-zero cross-entropy tests what it preserves and removes. no llm calls.
 
-## post 4 (224 chars)
+## post 4 (174 chars)
 
-the paper's digit detector, neuron 1863: 23 scored input/output weights, 8 robust passes. the passing predicates test whether the current token is digit-only. executable source, coverage and held-out scores are in the image.
+interpa 76.0% ± 1.3% sem vs paper 37.3%; interpb 28.5% ± 1.4% sem vs 35.3%. interpa is inflated: the synthesizer directly searches the discovery slice. held-out tests matter.
 
-## post 5 (203 chars)
+## post 5 (216 chars)
 
-available score files: 37 weights, 8 robust passes. selected case-study files are not evidence for a whole-model rate. a high raw score alone is not a robust pass: it must beat the coverage-matched null.
+116/177 cone-passing predicates (65.5%) have coverage > 30%. most passes are broad class/window gates, like a recent token being alphabetic. the narrow predicate gallery is a selected exception, not the distribution.
 
-## post 6 (199 chars)
+## post 6 (205 chars)
 
-corpus: codeparrot/codeparrot-clean-valid. slices are repo-exclusive, one file per repo, at most 512 tokens per document. 16,384 positions per slice. this is a different corpus budget from the paper.
+cone: mean ≥ 0.75 and mean − 2·sem > 0. random-null mean: the lower bound also beats a coverage-matched random mask's mean. strict null: it beats that mean + 2·sd. same scores, different robustness claims.
 
-## post 7 (224 chars)
+## post 7 (187 chars)
 
-honest limits: fixed causal grammar, not llm hypotheses; train/validation discovery split; coverage-penalized candidate selection, not plain argmax; our coverage-matched random robust null. the readme records the deviations.
+high-impact bin |δce| >=1e-4: 24/104 cone passes (23.1%). the paper calls this roughly a quarter. a local high-impact result still does not establish narrow explanations for most weights.
 
-## post 8 (95 chars)
+## post 8 (235 chars)
 
-browse the atlas and inspect the code, scores and contexts: {site_url}
-reproduce it: {repo_url}
+the paper's digit detector, neuron 1863: 23 scored input/output weights, 8 strict-null passes. those passing predicates test the current token for digits. the image keeps executable source, coverage and exact scores beside each weight.
+
+## post 9 (185 chars)
+
+corpus: codeparrot/codeparrot-clean-valid. repo-exclusive slices; one file per repo; at most 512 tokens per document; 16,384 positions per slice. different corpus budget from the paper.
+
+## post 10 (249 chars)
+
+honest limits: fixed causal grammar, not llm hypotheses; discovery train/validation split; coverage-penalized candidate selection, not plain argmax. null-cone reading and both coverage-matched alternatives are explicit. deviations are in the readme.
+
+## post 11 (76 chars)
+
+browse predicates, scores and contexts: {site_url}\nreproduce it: {repo_url}
 
 ## quote tweet
 
 source: https://x.com/Arnauya/status/2106229708438254025
 
-@Arnauya @sheimersheim this pushed me to build the executable version: single-weight ablations → rust predicate search → exact held-out tests. no llm calls in the interpretation loop. real digit-neuron results; whole-model claims wait for the run. {repo_url}
+@Arnauya @sheimersheim zero-llm search reaches 17.3% vs the paper's 15.0% under its null-cone test. but most predicates are broad; random-null mean 14.1%, strict null 1.8%. executable code + exact tests: {repo_url}
