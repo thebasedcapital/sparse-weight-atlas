@@ -66,8 +66,9 @@ The existing `swa-full` unit is not switched, stopped, or restarted by this opt-
 - Predicates come from enumerative search over a fixed causal grammar (token sets, character classes, ±8-token
   windows, and/or), not from an LLM; candidates are chosen on a train/validation split of slice 00.
 - Exactly-scored candidates are selected by `A.score − 0.5·A.cov`, not the paper's plain `A.score` argmax.
-- The robust null is ours (the paper leaves it unspecified): a coverage-matched random position mask per slice;
-  pass = mean ≥ 0.75 and mean − 2·SEM > null mean + 2·null SD.
+- Robust rate: the paper's ±2σ null cone is read from its Fig. 5 as `mean ≥ 0.75 and mean − 2·SEM > 0`
+  (headline). Two stricter variants are always reported next to it: beating a coverage-matched random mask's
+  mean, and beating its mean + 2 SD.
 - Slices are 16,384 positions, one file per repository, ≤512 tokens per document.
 
 ## Launch assets

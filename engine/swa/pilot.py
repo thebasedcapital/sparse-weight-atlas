@@ -307,7 +307,29 @@ def _interp(rec) -> bool:
     return bool(s is not None and cov is not None and s >= ROBUST_T and 0.0 < cov <= COVERAGE_MAX)
 
 
+def _robust_parts(r: Dict[str, Any]):
+    rob = r.get("robust") or {}
+    m, s = rob.get("mean"), rob.get("sem")
+    if m is None or s is None:
+        return None
+    return m, s, rob.get("null_mean"), rob.get("null_sd")
+
+
+def _robust_cone(r: Dict[str, Any]) -> bool:
+    """Paper Fig. 5 reading: mean held-out score >= T and outside the +-2 sigma null cone
+    around 0 in the (SEM, mean) plane, i.e. mean - 2*SEM > 0. This is the headline rule."""
+    p = _robust_parts(r)
+    return bool(p and p[0] >= ROBUST_T and p[0] - 2 * p[1] > 0)
+
+
+def _robust_beats_null_mean(r: Dict[str, Any]) -> bool:
+    """Cone rule, and the lower 2-SEM bound also beats a coverage-matched random mask's mean."""
+    p = _robust_parts(r)
+    return bool(p and p[2] is not None and p[0] >= ROBUST_T and p[0] - 2 * p[1] > p[2])
+
+
 def _robust_pass(r: Dict[str, Any]) -> bool:
+    """Strict rule stored in score records: also clears the random mask's mean + 2 SD."""
     rob = r.get("robust") or {}
     return bool(rob.get("pass"))
 
@@ -342,7 +364,10 @@ def build_report(model: str, tag: str, seed: Optional[int], n_requested: int,
         return {
             "interpA": _rate(sel, lambda r: _interp(r.get("A"))),
             "interpB": _rate(sel, lambda r: _interp(r.get("B"))),
-            "robust": _rate(sel, _robust_pass),
+            # headline = paper Fig. 5 null cone; the two stricter variants are reported alongside
+            "robust": _rate(sel, _robust_cone),
+            "robust_beats_null_mean": _rate(sel, _robust_beats_null_mean),
+            "robust_strict": _rate(sel, _robust_pass),
         }
 
     per_layer = []
@@ -389,7 +414,10 @@ def build_report(model: str, tag: str, seed: Optional[int], n_requested: int,
             "paper": {"interpA": PAPER["interpA"], "interpB": PAPER["interpB"],
                       "robust": PAPER["robust"]},
             "note": "ours: rates over all sampled weights with a verdict "
-                    "(scored+noise_floor+no_candidate); paper: Gao et al. 2025 Table 1",
+                    "(scored+noise_floor+no_candidate); robust = mean held-out score >= 0.75 and "
+                    "mean - 2*SEM > 0 (paper Fig. 5 null cone); see rates.*.robust_beats_null_mean "
+                    "and robust_strict for coverage-matched random-mask nulls; paper: Gao et al. "
+                    "2025 Table 1",
         },
         "per_layer": per_layer,
         "per_bin": per_bin,

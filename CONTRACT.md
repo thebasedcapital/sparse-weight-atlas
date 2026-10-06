@@ -140,9 +140,12 @@ Exact conditional-zero: weight zeroed everywhere, its contribution restored exac
 c_proj[o,j]: add back `W·H[...,j]` to output o before mlp_out top-k), full suffix of the network re-run.
 Paper metric (T=0.75, c=0.5): `rec = 1 − (CE_f − CE_0)/ΔCE`, `inv = 1 − (CE_¬f − CE_0)/ΔCE`,
 `score = min(rec, 1−inv)`, interpretable iff `score ≥ 0.75 and 0 < cov ≤ 0.5`.
-Robust (paper leaves the null under-specified; OUR documented definition): per held-out slice k=02..11, score s_k
-of f*, and null score n_k of a coverage-matched random position mask (same per-slice coverage, fixed seed).
-`pass = mean(s) ≥ 0.75 and mean(s) − 2·sem(s) > mean(n) + 2·sd(n)`.
+Robust: per held-out slice k=02..11, score s_k of f*, and null score n_k of a coverage-matched random position
+mask (same per-slice coverage, fixed seed). Three rules are reported (`swa.pilot` report):
+- `robust` (headline, paper Fig. 5 reading — "above the bar and outside the ±2σ null cone" in the (SEM, mean)
+  plane): `mean(s) ≥ 0.75 and mean(s) − 2·sem(s) > 0`.
+- `robust_beats_null_mean`: additionally `mean(s) − 2·sem(s) > mean(n)`.
+- `robust_strict` (= `robust.pass` stored in score records): `mean(s) − 2·sem(s) > mean(n) + 2·sd(n)`.
 
 ### Site data — `site/data/`
 `summary.json` (counts, rates, per-layer/per-bin tables), `layer_{LL}.json` (compact per-weight rows for the grid:
