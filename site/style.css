@@ -66,6 +66,7 @@ h1 { margin: 0; font-size: 30px; letter-spacing: -0.5px;
 .sw.scored { background: var(--scored); }
 .sw.noise { background: var(--noise); }
 .sw.nocand { background: var(--nocand); }
+.sw.cand { background: rgb(92, 72, 140); }
 .sw.unscored { background: var(--unscored); border: 1px solid var(--line); }
 
 main { padding: 18px 28px 60px; }
@@ -99,6 +100,8 @@ main { padding: 18px 28px 60px; }
 .badge.pass { color: var(--accent); border-color: #1f4d3a; }
 .badge.scored { color: var(--scored); }
 .badge.noise_floor { color: #9aa4b1; }
+.badge.candidate { color: #b39ddb; }
+.method-note.unverified { color: #b39ddb; }
 .badge.no_candidate, .badge.unscored { color: #b45d5d; }
 .card .desc { margin: 10px 0; color: var(--txt); }
 .card pre.py { background: #0a0c0f; border: 1px solid var(--line); border-radius: 8px;

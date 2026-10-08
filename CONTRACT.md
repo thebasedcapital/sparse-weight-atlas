@@ -159,6 +159,12 @@ Summary counts use `robust_pass`, `robust_beats_null_mean`, `robust_strict`; rat
 `robust_beats_null_mean`, `robust_strict`. These rates and InterpA/B divide by all verdicts
 (`scored + noise_floor + no_candidate`), excluding only unscored weights. Per-layer/per-bin tables expose
 the three rule counts, their rates, and explicit verdict denominators; their existing `pass` count is cone.
+Weights without an exact score record get status `candidate` when the synthesizer proposed a rule (best of
+`runs/<model>/candidates/<shard>.jsonl`; card carries `spec`, `py`, `desc`, `proxy`; UNVERIFIED, never tested on
+held-out text, shown as "not tested", never as a rule failure) and `unscored` otherwise. Their `dce` is the exact
+slice-00 ablation from the profile. `candidate`/`unscored` are excluded from every rate denominator.
+`model.py` entries are `(wid, row, col, value, py_or_None, desc_or_None, status)` with status
+`robust` | `scored` | `candidate` | `noise_floor` | `unscored`.
 Provenance identifies `kind=pipeline_export`, all `scores_dirs` in merge order, and `exported_at` (UTC).
 Both exporters accept either `--scores-dir` or `--scores-dirs DIR [DIR ...]`; later directories win by wid.
 Merged exports need not be uniform samples: the pure uniform-pilot report remains the headline comparison.

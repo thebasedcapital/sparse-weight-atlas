@@ -24,6 +24,6 @@ echo "[run_full] $(date -Is) synth all shards"
 synth/target/release/swa-synth --model "$MODEL" --root . --force
 
 echo "[run_full] $(date -Is) export"
-$PY -u -m swa.export_site --model "$MODEL" --scores-dir "runs/$MODEL/scores_pilot"
-$PY -u -m swa.export_modelpy --model "$MODEL" --scores-dir "runs/$MODEL/scores_pilot"
+$PY -u -m swa.export_site --model "$MODEL" --scores-dirs "runs/$MODEL/scores_casestudy" "runs/$MODEL/scores_pilot"
+$PY -u -m swa.export_modelpy --model "$MODEL" --scores-dirs "runs/$MODEL/scores_casestudy" "runs/$MODEL/scores_pilot"
 echo "[run_full] $(date -Is) done"

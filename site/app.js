@@ -18,6 +18,7 @@ const COLORS = {
   unscored: [26, 30, 36],
   no_candidate: [127, 29, 29],
   noise_floor: [75, 85, 99],
+  candidate: [92, 72, 140], // unverified synthesized rule (purple)
 };
 // Legacy exports used `pass` for the strict rule. Only the shared three-field
 // schema identifies it as cone; missing rule fields must not become a false pass.
@@ -98,13 +99,14 @@ function renderSummary(s) {
   $("#st-strict").textContent = fmt(hasRules ? c.robust_strict : null);
   $("#st-strict-rate").textContent = fmtPct(strictRate);
   $("#st-noise").textContent = fmt(c.noise_floor);
+  if ($("#st-cand")) $("#st-cand").textContent = fmt(c.candidate);
   const verdicts = c.scored + c.noise_floor + c.no_candidate;
   $("#data-note").textContent = s.fixture
     ? "SYNTHETIC FIXTURE · not measured model results. " +
       (hasRules ? "Rates describe synthetic verdicts only." :
         "Legacy aggregate/grid fields do not identify the three rules; unavailable outcomes are not passes. Card rules are derived from synthetic numeric stats.")
     : `Combined exported verdict rates · ${fmt(verdicts)} verdicts ` +
-      `(scored + noise floor + no candidate); ${fmt(c.unscored)} unscored weights excluded. ` +
+      `(scored + noise floor + no candidate); ${fmt(c.candidate ?? 0)} unverified candidate rules and ${fmt(c.unscored)} unscored weights excluded. ` +
       "Pilot + selected case study, not a random sample or the uniform-pilot headline comparison." +
       (hasRules ? "" : " Three-rule fields unavailable in this older export.");
   $("#foot-note").textContent =
@@ -253,12 +255,19 @@ function maybeReportLoad() {
 
 /* ---------- weight card ---------- */
 
+// Tokenize the raw source first, then escape each piece; highlighting already-escaped HTML
+// let the number pass rewrite entities (&#39; -> &#<span>39</span>;).
+const PY_TOKEN = /("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|\b(def|return|any|all|for|in|not|and|or|is|None|True|False|range)\b|\b(\d+(?:\.\d+)?)\b/g;
 function highlightPy(src) {
-  const esc = escapeHtml(src);
-  return esc
-    .replace(/(&quot;[^&]*?&quot;|&#39;[^&]*?&#39;)/g, '<span class="s">$1</span>')
-    .replace(/\b(def|return|any|all|for|in|not|and|or|is|None|True|False|range)\b/g, '<span class="k">$1</span>')
-    .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="n">$1</span>');
+  let out = "", last = 0, m;
+  PY_TOKEN.lastIndex = 0;
+  while ((m = PY_TOKEN.exec(src))) {
+    out += escapeHtml(src.slice(last, m.index));
+    const cls = m[1] ? "s" : m[2] ? "k" : "n";
+    out += `<span class="${cls}">${escapeHtml(m[0])}</span>`;
+    last = m.index + m[0].length;
+  }
+  return out + escapeHtml(src.slice(last));
 }
 
 function scoreRow(name, blk, cls) {
@@ -279,6 +288,10 @@ function fmtRaw(x) { return Number.isFinite(x) ? String(x) : "–"; }
 
 function robustHtml(w, rules) {
   const r = w.robust;
+  if (!r && !state.summary.fixture) {
+    return `<section class="robust-rules"><h3>Three robust rules · held-out</h3>
+      <p class="sr-nums">Not tested: no held-out scores for this weight, so no rule can pass or fail.</p></section>`;
+  }
   const rule = (name, value, formula) => `<div class="rule-row">
     <div class="rule-title"><strong>${name}</strong><span class="badge ${value === true ? "pass" : ""}">${verdictLabel(value)}</span></div>
     <code>${formula}</code></div>`;
@@ -340,6 +353,7 @@ async function openCard(wid) {
       ${w.dce != null ? `· ΔCE ${w.dce.toExponential(3)}` : ""}
       · <span class="badge ${w.status}">${w.status}</span>
       ${rules.cone === true ? '<span class="badge pass">cone robust pass</span>' : ""}</div>
+    ${w.status === "candidate" ? `<p class="method-note unverified">UNVERIFIED: proposed by the Rust synthesizer from this weight's slice-00 ablation profile and never tested on held-out text${w.proxy ? ` · search proxy: coverage ${(w.proxy.cov * 100).toFixed(1)}%, validation-half score ${Number(w.proxy.score_val ?? w.proxy.score).toFixed(2)}` : ""}. ΔCE is the exact single-weight ablation on slice 00.</p>` : ""}
     ${w.desc ? `<div class="desc">${escapeHtml(w.desc)}</div>` : ""}
     ${robustHtml(w, rules)}
     ${w.py ? `<h3>predicate</h3><pre class="py">${highlightPy(w.py)}</pre>` : ""}

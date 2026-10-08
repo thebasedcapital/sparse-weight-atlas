@@ -25,7 +25,8 @@ from pathlib import Path
 import numpy as np
 
 MATRIX_NAMES = ("c_fc", "c_proj")
-STATUSES = ("scored", "noise_floor", "no_candidate", "unscored")
+# "candidate": no exact score, but the synthesizer proposed a rule (UNVERIFIED; proxy only).
+STATUSES = ("scored", "noise_floor", "no_candidate", "candidate", "unscored")
 VERDICT_STATUSES = ("scored", "noise_floor", "no_candidate")
 ROBUST_COUNT_FIELDS = {
     "pass": "robust_pass",
@@ -111,16 +112,24 @@ class ProfileIndex:
     def __init__(self, runs_dir: Path):
         self.root = runs_dir / "profiles"
         self.loc = {}  # wid -> (shard_dir, index)
+        self.dce_mean = {}  # wid -> exact slice-00 ablation dCE, mean per position
         if self.root.is_dir():
             for shard in sorted(self.root.iterdir()):
                 wid_path = shard / "wid.npy"
                 if not wid_path.exists():
                     continue
                 wids = np.load(wid_path)
+                meta = json.loads((shard / "meta.json").read_text())
+                totals = np.load(shard / "dce_total.npy") / float(meta["n_positions"])
                 for i, w in enumerate(wids):
                     self.loc[int(w)] = (shard, i)
+                    self.dce_mean[int(w)] = float(totals[i])
         self._cache_dir = None
         self._cache = None
+
+    def shard_of(self, wid: int) -> str | None:
+        loc = self.loc.get(wid)
+        return loc[0].name if loc else None
 
     def _load(self, shard: Path):
         if self._cache_dir == shard:
@@ -158,6 +167,29 @@ class ProfileIndex:
         return out
 
 
+class CandidateIndex:
+    """wid -> best synthesized candidate (first in its list); lazy per-shard JSONL loads."""
+
+    def __init__(self, runs_dir: Path):
+        self.root = runs_dir / "candidates"
+        self._shard = None
+        self._best = {}
+
+    def best(self, shard: str | None, wid: int) -> dict | None:
+        if shard is None:
+            return None
+        if shard != self._shard:
+            self._shard, self._best = shard, {}
+            path = self.root / f"{shard}.jsonl"
+            if path.exists():
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        d = json.loads(line)
+                        if d.get("cands"):
+                            self._best[int(d["wid"])] = d["cands"][0]
+        return self._best.get(wid)
+
+
 def interp_rate(recs, verdicts: int | None = None):
     """Paper rule rate, optionally over all verdicts rather than only metric records."""
     denominator = len(recs) if verdicts is None else verdicts
@@ -187,6 +219,7 @@ def export_model(model: str, runs: Path, data: Path, out: Path,
     directories = score_directories(runs_dir, scores_dir, scores_dirs)
     scores = load_scores(runs_dir, scores_dirs=directories)
     profiles = ProfileIndex(runs_dir)
+    candidates = CandidateIndex(runs_dir)
 
     tokens = None
     inputs = None
@@ -209,11 +242,22 @@ def export_model(model: str, runs: Path, data: Path, out: Path,
     bins = [{"bin": b, "total": 0, "verdicts": 0,
              **{field: 0 for field in ROBUST_COUNT_FIELDS}} for b in bin_labels]
 
+    def flush(b: int, cards: dict) -> None:
+        (out_dir / "w" / f"{b}.json").write_text(
+            json.dumps({"bucket": b, "w": cards}, separators=(",", ":"), ensure_ascii=False),
+            encoding="utf-8")
+
     for wid in range(W):
         L = int(layer[wid]); m = int(matrix[wid])
         rec = scores.get(wid)
+        proxy = None
         if rec is None:
-            status, dce, spec, py, desc, A, B, rob = "unscored", None, None, None, None, None, None, None
+            status, spec, py, desc, A, B, rob = "unscored", None, None, None, None, None, None
+            dce = profiles.dce_mean.get(wid)  # exact slice-00 ablation, no predicate test
+            cand = candidates.best(profiles.shard_of(wid), wid)
+            if cand is not None:
+                status = "candidate"
+                spec, py, desc, proxy = cand.get("spec"), cand.get("py"), cand.get("desc"), cand.get("proxy")
         else:
             status = rec.get("status", "unscored")
             dce = rec.get("dce")
@@ -246,13 +290,16 @@ def export_model(model: str, runs: Path, data: Path, out: Path,
             "wid": wid, "layer": L, "matrix": m, "matrix_name": MATRIX_NAMES[m],
             "row": int(row[wid]), "col": int(col[wid]), "value": float(value[wid]),
             "status": status, "dce": dce, "spec": spec, "py": py, "desc": desc,
-            "A": A, "B": B, "robust": rob, **rules,
+            "A": A, "B": B, "robust": rob, "proxy": proxy, **rules,
         }
-        if status == "unscored" or profiles.loc.get(wid) is None:
+        if profiles.loc.get(wid) is None or tokens is None or inputs is None:
             card["contexts"] = []
         else:
-            card["contexts"] = profiles.top_contexts(wid, inputs, tokens) if tokens is not None and inputs is not None else []
-        buckets.setdefault(wid // 1000, {})[wid] = card
+            card["contexts"] = profiles.top_contexts(wid, inputs, tokens)
+        b = wid // 1000
+        buckets.setdefault(b, {})[wid] = card
+        if wid + 1 == W or (wid + 1) // 1000 != b:
+            flush(b, buckets.pop(b))
 
     # ---- write layer files ----
     per_layer = []
@@ -272,12 +319,6 @@ def export_model(model: str, runs: Path, data: Path, out: Path,
         table["rates"] = robust_rates(table, table["verdicts"])
         per_layer.append(table)
 
-    # ---- write bucket files ----
-    for b, cards in buckets.items():
-        (out_dir / "w" / f"{b}.json").write_text(
-            json.dumps({"bucket": b, "w": cards}, separators=(",", ":"), ensure_ascii=False),
-            encoding="utf-8")
-
     # ---- summary ----
     scored = counts["scored"]
     verdicted = scored + counts["noise_floor"] + counts["no_candidate"]
@@ -294,6 +335,7 @@ def export_model(model: str, runs: Path, data: Path, out: Path,
             "total": W, "scored": scored, "verdicts": verdicted,
             "noise_floor": counts["noise_floor"],
             "no_candidate": counts["no_candidate"],
+            "candidate": counts["candidate"],
             "unscored": counts["unscored"],
             **rule_counts,
         },
@@ -354,7 +396,7 @@ def main():
     c = summary["counts"]
     print(f"[export_site] {args.model}: total={c['total']} scored={c['scored']} "
           f"noise_floor={c['noise_floor']} no_candidate={c['no_candidate']} "
-          f"unscored={c['unscored']} verdicts={c['verdicts']} "
+          f"candidate={c['candidate']} unscored={c['unscored']} verdicts={c['verdicts']} "
           f"robust_pass={c['robust_pass']} robust_beats_null_mean={c['robust_beats_null_mean']} "
           f"robust_strict={c['robust_strict']} "
           f"(cone={(summary['rates']['robust'] or 0) * 100:.2f}% of merged verdicts; "

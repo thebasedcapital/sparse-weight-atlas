@@ -28,6 +28,7 @@
     <div class="stat"><span class="num" id="st-nullmean-rate">–</span><span class="lbl">robust · beats null mean</span><span class="stat-count"><b id="st-nullmean">–</b> passing verdicts</span></div>
     <div class="stat"><span class="num" id="st-strict-rate">–</span><span class="lbl">robust · strict (null mean + 2 SD)</span><span class="stat-count"><b id="st-strict">–</b> passing verdicts</span></div>
     <div class="stat"><span class="num" id="st-noise">–</span><span class="lbl">noise floor</span></div>
+    <div class="stat"><span class="num" id="st-cand">–</span><span class="lbl">unverified candidate rules</span></div>
   </div>
   <p class="data-note" id="data-note"></p>
   <p class="method-note">InterpA is discovery: predicates are directly searched and selected on slice 00, so its score is inflated by selection, not held-out evidence. InterpB and all three robust rules use held-out slices.</p>
@@ -41,6 +42,7 @@
     <span class="key"><i class="sw scored"></i>scored · cone fail / unavailable</span>
     <span class="key"><i class="sw noise"></i>noise floor</span>
     <span class="key"><i class="sw nocand"></i>no candidate</span>
+    <span class="key"><i class="sw cand"></i>unverified candidate rule</span>
     <span class="key"><i class="sw unscored"></i>unscored</span>
     <span class="key dim">click a cell for its card · T=0.75, c=0.5</span>
   </div>

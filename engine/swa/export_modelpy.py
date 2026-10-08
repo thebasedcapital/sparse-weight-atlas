@@ -17,8 +17,9 @@ from pathlib import Path
 import numpy as np
 
 from .export_site import (MATRIX_NAMES, PAPER_ROBUST_RATE, ROBUST_COUNT_FIELDS,
-                          STATUSES, VERDICT_STATUSES, interp_rate, load_scores,
-                          robust_rates, robust_rules, score_directories, score_provenance)
+                          STATUSES, VERDICT_STATUSES, CandidateIndex, ProfileIndex,
+                          interp_rate, load_scores, robust_rates, robust_rules,
+                          score_directories, score_provenance)
 
 
 
@@ -46,12 +47,17 @@ def export_modelpy(model: str, runs: Path, out: Path,
     directories = score_directories(runs_dir, scores_dir, scores_dirs)
     scores = load_scores(runs_dir, scores_dirs=directories)
     provenance = score_provenance(directories)
+    profiles = ProfileIndex(runs_dir)
+    candidates = CandidateIndex(runs_dir)
     counts = {"total": W, **{status: 0 for status in STATUSES},
               **{field: 0 for field in ROBUST_COUNT_FIELDS.values()}}
     a_recs, b_recs = [], []
     for wid in range(W):
         record = scores.get(wid) or {}
-        counts[record.get("status", "unscored")] += 1
+        status = record.get("status")
+        if status is None:
+            status = "candidate" if candidates.best(profiles.shard_of(wid), wid) else "unscored"
+        counts[status] += 1
         for field, passed in robust_rules(record).items():
             counts[ROBUST_COUNT_FIELDS[field]] += passed
         if record.get("A"):
@@ -80,10 +86,12 @@ def export_modelpy(model: str, runs: Path, out: Path,
     ap('Strict: cone, and the stored robust.pass verdict (lower > null_mean + 2*null_sd).')
     ap('')
     ap('W[layer][matrix] is a list of entries, one per nonzero weight, in wid order:')
-    ap('    (wid, row, col, value, predicate_source_or_None, description_or_None)')
+    ap('    (wid, row, col, value, predicate_source_or_None, description_or_None, status)')
     ap('matrix 0 = c_fc [out=d_mlp, in=d_model], matrix 1 = c_proj [out=d_model, in=d_mlp].')
-    ap('Predicate source is the executable Python predicate f(tokens, pos) found by the')
-    ap('pipeline; description is its one-line gloss. None = not scored / no candidate.')
+    ap('Predicate source is the executable Python predicate f(tokens, pos) for when the weight')
+    ap('matters. status: "robust" = passed the held-out cone test; "scored" = exactly scored,')
+    ap('not robust; "candidate" = UNVERIFIED rule from the synthesizer (search proxy only, never')
+    ap('tested on held-out text); "noise_floor" / "unscored" = no predicate.')
     ap('"""')
     ap('')
     ap(f'MODEL = {pystr(model)}')
@@ -94,6 +102,7 @@ def export_modelpy(model: str, runs: Path, out: Path,
     ap(f'SCORED = {counts["scored"]}')
     ap(f'NOISE_FLOOR = {counts["noise_floor"]}')
     ap(f'NO_CANDIDATE = {counts["no_candidate"]}')
+    ap(f'CANDIDATE = {counts["candidate"]}  # unverified synthesized rules')
     ap(f'UNSCORED = {counts["unscored"]}')
     ap(f'VERDICTS = {counts["verdicts"]}  # denominator for every rule rate below')
     ap(f'ROBUSTLY_INTERPRETABLE = {counts["robust_pass"]}  # cone rule')
@@ -115,12 +124,19 @@ def export_modelpy(model: str, runs: Path, out: Path,
             ap(f'        # {MATRIX_NAMES[m]} ({n_here} nonzero weights)')
             while wid < W and layer[wid] == L and matrix[wid] == m:
                 rec = scores.get(wid)
-                if rec is None or rec.get("status") != "scored":
-                    entry = (f'({wid}, {int(row[wid])}, {int(col[wid])}, {float(value[wid])!r}, '
-                             f'None, None),')
+                base = f'({wid}, {int(row[wid])}, {int(col[wid])}, {float(value[wid])!r}, '
+                if rec is not None and rec.get("status") == "scored":
+                    tag = "robust" if robust_rules(rec)["pass"] else "scored"
+                    py, desc = rec.get("py"), rec.get("desc")
+                elif rec is None and (cand := candidates.best(profiles.shard_of(wid), wid)):
+                    tag, py, desc = "candidate", cand.get("py"), cand.get("desc")
                 else:
-                    entry = (f'({wid}, {int(row[wid])}, {int(col[wid])}, {float(value[wid])!r}, '
-                             f'{pystr(rec.get("py") or "")}, {pystr(rec.get("desc") or "")}),')
+                    tag = (rec or {}).get("status", "unscored")
+                    py = desc = None
+                if py is None:
+                    entry = base + f'None, None, {pystr(tag)}),'
+                else:
+                    entry = base + f'{pystr(py)}, {pystr(desc or "")}, {pystr(tag)}),'
                 ap('        ' + entry)
                 wid += 1
         ap('    ],')

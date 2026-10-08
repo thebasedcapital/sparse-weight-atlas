@@ -11,6 +11,6 @@ $PY -u -m swa.profile --model "$MODEL" --layers 0,1,2,3,4,5,6,7,8,9,10,11 --fast
 echo "[run_rest] $(date -Is) synth all shards"
 synth/target/release/swa-synth --model "$MODEL" --root . --force
 echo "[run_rest] $(date -Is) export"
-$PY -u -m swa.export_site --model "$MODEL" --scores-dir "runs/$MODEL/scores_pilot"
-$PY -u -m swa.export_modelpy --model "$MODEL" --scores-dir "runs/$MODEL/scores_pilot"
+$PY -u -m swa.export_site --model "$MODEL" --scores-dirs "runs/$MODEL/scores_casestudy" "runs/$MODEL/scores_pilot"
+$PY -u -m swa.export_modelpy --model "$MODEL" --scores-dirs "runs/$MODEL/scores_casestudy" "runs/$MODEL/scores_pilot"
 echo "[run_rest] $(date -Is) done"
