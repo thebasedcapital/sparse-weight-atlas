@@ -9,3 +9,4 @@ site/pilot/
 data_div*/
 model/csp_yolo1/final_model.pt
 synth/fixtures/out/
+paper/

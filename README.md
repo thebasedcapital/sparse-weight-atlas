@@ -1,21 +1,56 @@
 # sparse-weight-atlas
 
-Every nonzero MLP weight of OpenAI's weight-sparse transformer `csp_yolo1` (Gao et al. 2025), ablated one at a
-time, profiled, and given an executable Python predicate for *when it matters* — found by a Rust program
-synthesizer, **no LLM in the loop** — then scored with the exact metric of
-[arXiv 2607.02964](https://arxiv.org/abs/2607.02964) ("Individual Parameters in Weight-Sparse Transformers Appear
-Interpretable", Marin-Llobet & Heimersheim, NeurIPS 2026).
+**Every nonzero MLP weight of OpenAI's weight-sparse transformer, explained by an executable Python rule — with
+no LLM in the loop.**
+
+This project is inspired by, and reproduces the metric of,
+**[Individual Parameters in Weight-Sparse Transformers Appear Interpretable](https://arxiv.org/abs/2607.02964)**
+by Arnau Marin-Llobet and Stefan Heimersheim (NeurIPS 2026; project site
+[weightpedia.org](https://weightpedia.org/individual-parameters-in-sparse-transformers/)). The paper asks an LLM
+to write 100 candidate Python rules `f(tokens, pos) -> bool` per weight and tests whether a rule explains *when*
+that single weight matters. We ask whether a plain program search can do the same, and run it on **all 393,216**
+nonzero MLP weights of the model the paper studies, `csp_yolo1` from
+[Gao et al. 2025, *Weight-sparse transformers have interpretable circuits*](https://arxiv.org/abs/2511.13653)
+([openai/circuit_sparsity](https://github.com/openai/circuit_sparsity)).
+
+## Results
 
 ```
-corpus (CodeParrot-valid, 12 repo-exclusive slices) ──► swa.profile   exact single-weight ablation, per-token ΔCE/KL
-                                                     ──► swa-synth     Rust predicate search over a token/class/window grammar
-                                                     ──► swa.score     exact conditional-zero CE: InterpA, InterpB, robust (K=10)
-                                                     ──► swa.export_*  static atlas site + annotated model.py
+ csp_yolo1: 160,570,368 params → 807,936 nonzero transformer params → 393,216 MLP weights (all profiled)
+
+ robustly interpretable (10 held-out slices)     paper's test   + beats random rule   + strict null
+ uniform sample, 1,024 weights                   17.3% ± 1.2    10.5% ± 1.0           1.8% ± 0.4
+ paper, Table 1 (LLM-written rules)              15.0% ± 1.7
+ all 1,669 high-impact weights (|ΔCE| ≥ 1e-3)    40.5% ± 1.2    39.2% ± 1.2          33.7% ± 1.2
 ```
 
-Formats, metric definitions and validation gates: [`CONTRACT.md`](CONTRACT.md). Recon notes: `docs/recon/`.
+- **No LLM needed for the headline.** A Rust search over token/character-class/±8-token-window rules reaches
+  17.3% robustly interpretable weights under the paper's test (paper: 15.0%).
+- **But the test can be met by broad rules.** 65% of those passing rules fire on >30% of all tokens (e.g. "a
+  recent token is alphabetic"). Requiring a rule to beat a random position mask of the same coverage leaves
+  10.5%; a strict null leaves 1.8%.
+- **Where it matters, it is real.** On every weight whose ablation moves the loss by ≥1e-3 nats/token, 40.5%
+  pass, a third pass even the strict null, and the passing rules are narrow (median coverage 7%).
+- **The paper's digit detector, rediscovered.** For 8 input/output weights of neuron 1863 (paper Fig. 7) the
+  search independently finds `tokens[pos].isdigit()`, held-out mean 0.95–1.02 on 10 unseen slices.
 
-## Setup
+All numbers: [`assets/results.json`](assets/results.json). The high-impact set is selected by impact and is not
+comparable to the paper's uniform sample.
+
+## How it works
+
+```
+CodeParrot-valid, 12 repo-exclusive slices of 16,384 tokens
+  └─ swa.profile     zero one weight, replay the model; exact per-token ΔCE / KL     (bit-identical to zeroing it)
+      └─ swa-synth   Rust search over a causal rule grammar, ~600 weights/s           (train/validation split)
+          └─ swa.score   restore the weight only where the rule fires; exact CE on    (paper metric: rec, inv,
+                         the discovery slice, slice 01, and 10 held-out slices         score, coverage ≤ 0.5)
+              └─ swa.export_*   static atlas site + annotated model.py
+```
+
+Formats, metric definitions and validation gates: [`CONTRACT.md`](CONTRACT.md).
+
+## Reproduce
 
 ```bash
 uv venv .venv && VIRTUAL_ENV=$PWD/.venv uv pip install torch --index-url https://download.pytorch.org/whl/cu126
@@ -28,79 +63,46 @@ export PYTHONPATH=engine
 .venv/bin/python -m swa.corpus  --model csp_yolo1          # 12 slices x 64 x 256 tokens
 .venv/bin/python -m swa.vocab   --model csp_yolo1
 .venv/bin/python -m swa.weights --model csp_yolo1          # weights.npz + baseline CE
-```
-
-## Run
-
-```bash
 .venv/bin/python scripts/check_g1.py                       # replay == zeroed full forward, bitwise
-.venv/bin/python -m swa.pilot --model csp_yolo1 --n 1024   # paper metric on a uniform sample -> runs/csp_yolo1/pilot/report.json
-systemd-run --user --unit swa-full --working-directory="$PWD" scripts/run_full.sh   # pilot + all 393,216 weights
-cd site && python -m http.server 8765                      # browse the atlas
+
+.venv/bin/python -m swa.pilot --model csp_yolo1 --n 1024   # paper metric on a uniform sample
+scripts/run_rest.sh                                         # profile + synthesize all 393,216 weights, export
+scripts/run_highimpact.sh                                   # exact scores for every |ΔCE| >= 1e-3 weight
+cd site && python -m http.server 8765                       # browse the atlas
 ```
 
-Measured on a Quadro RTX 4000 (8 GB, fp32 — fp16 breaks bitwise exactness): exact profiling 0.9 (layer 0) to
-8 (layer 11) weights/s, ~66 h for all 393,216 MLP weights; exact scoring ~43 s/weight; synthesis ~600 weights/s.
+Every long stage checkpoints per shard and resumes. Measured on one Quadro RTX 4000 (8 GB, fp32): profiling all
+weights 50.8 h with `--fast` (CSR suffix MLPs, gated by `scripts/check_fast.py` against eager's own numerical
+noise floor), pilot scoring 11.8 h, high-impact scoring 19.4 h. fp16 is not usable: it moves CE by up to 0.86.
 
-Opt-in accelerated profiling keeps the production sequence chunk (64) and fp32, uses CSR MLPs only in the
-suffix, and reuses target-layer activations across weight variants. The eager default and shard format are
-unchanged. `scripts/check_fast.py` passed 33 weights across layers 0/5/11 and both matrices, including digit
-weights 7509/7511/7514: measured eager chunk-64 vs chunk-8 noise floors were `2.40564e-4` per-position ΔCE,
-`6.10352e-5` per-position KL, and `1.57797e-7` mean ΔCE; fast mean ΔCE must additionally agree within
-`max(1e-7, 1% relative)`. This is numerical-floor equivalence, **not** the default's bitwise G1 guarantee.
-Interleaved four-weight benchmarks with the pilot sharing the GPU measured eager/fast throughput of
-`0.423/0.548`, `0.715/0.942`, and `4.199/7.551` weights/s at layers 0/5/11. Piecewise-linear extrapolation
-over 393,216 weights gives `142.17 -> 107.21 h` (1.326×) **under that contention**, not an uncontended ETA.
-Measurements and rejected graph/compile/padded-attention/gather experiments: `runs/csp_yolo1/fast_bench.json`.
+## Deviations from the paper
 
-```bash
-PYTHONPATH=engine .venv/bin/python scripts/check_fast.py --gate --bench
-# For a new/resumed run only, with no other profiler writing these shards:
-PYTHONPATH=engine .venv/bin/python -m swa.profile --model csp_yolo1 --layers 0,1,2,3,4,5,6,7,8,9,10,11 --fast
+- Rules come from enumerative search over a fixed causal grammar, not an LLM; candidates are chosen on a
+  train/validation split of the discovery slice, so our InterpA (76%) is inflated and not comparable.
+- Among exactly scored candidates, f* maximizes `A.score − 0.5·A.cov` instead of plain `A.score`.
+- The paper does not spell out its robust null. We read its Fig. 5 cone as `mean ≥ 0.75 and mean − 2·SEM > 0`
+  (headline) and always report two stricter coverage-matched random-mask nulls next to it.
+- Corpus: `codeparrot/codeparrot-clean-valid`, one file per repository, ≤512 tokens per document.
+- Atlas cards for weights without exact scores show the synthesizer's best rule labelled **unverified**.
+
+## Credits and licenses
+
+- Method and metric: Marin-Llobet & Heimersheim, [arXiv:2607.02964](https://arxiv.org/abs/2607.02964) (CC BY 4.0).
+  Thanks to the authors for the paper and Weightpedia.
+- Model, tokenizer and inference code: Gao et al. 2025, [openai/circuit_sparsity](https://github.com/openai/circuit_sparsity).
+  `engine/circuit_sparsity/` and `model/*.json` are vendored from it under Apache-2.0
+  ([`engine/circuit_sparsity/LICENSE`](engine/circuit_sparsity/LICENSE)). Weights are downloaded, not redistributed.
+- Corpus: [codeparrot/codeparrot-clean-valid](https://huggingface.co/datasets/codeparrot/codeparrot-clean-valid),
+  downloaded at build time, not redistributed.
+- Everything else: MIT, see [`LICENSE`](LICENSE).
+
+```bibtex
+@inproceedings{marinllobet2026individual,
+  title  = {Individual Parameters in Weight-Sparse Transformers Appear Interpretable},
+  author = {Marin-Llobet, Arnau and Heimersheim, Stefan},
+  booktitle = {NeurIPS},
+  year   = {2026},
+  eprint = {2607.02964},
+  archivePrefix = {arXiv}
+}
 ```
-
-The existing `swa-full` unit is not switched, stopped, or restarted by this opt-in path.
-
-## Deviations from the paper (documented, deliberate)
-
-- Predicates come from enumerative search over a fixed causal grammar (token sets, character classes, ±8-token
-  windows, and/or), not from an LLM; candidates are chosen on a train/validation split of slice 00.
-- Exactly-scored candidates are selected by `A.score − 0.5·A.cov`, not the paper's plain `A.score` argmax.
-- Robust rate: the paper's ±2σ null cone is read from its Fig. 5 as `mean ≥ 0.75 and mean − 2·SEM > 0`
-  (headline). Two stricter variants are always reported next to it: beating a coverage-matched random mask's
-  mean, and beating its mean + 2 SD.
-- Slices are 16,384 positions, one file per repository, ≤512 tokens per document.
-
-## Launch assets
-
-```bash
-.venv/bin/python scripts/make_launch.py \
-  --pilot-report runs/csp_yolo1/pilot/report.json \
-  --scores-dirs runs/csp_yolo1/scores_pilot
-```
-
-Writes measured stills, a draft X thread, and a ≤30-second 1600×900 browser tour under `assets/launch/`.
-Missing pilot results skip `headline.png` and `layers_bins.png` with an explicit message; the case-study
-diagram and predicate gallery use existing score files and read-only profile contexts. `--top-n` selects
-the gallery size and `--skip-tour` regenerates only images/text. Rendering requires Pillow, matplotlib,
-and NumPy; the tour requires `playwright` with Chromium (`.venv/bin/playwright install chromium`) and ffmpeg.
-The headline and layer/bin chart compare all three robust rules. The gallery selects cone-passing predicates
-with discovery coverage ≤0.1, ordered by |ΔCE|, from the specified score directories (pilot by default).
-These narrow examples are deliberately not representative of the broader passing-predicate distribution.
-The neuron-1863 diagram always comes from the separate case-study scores and labels its strict-null verdicts.
-It serves `site/` on an ephemeral localhost port and closes the server/browser afterwards; no GPU is used.
-Real site exports carry score-directory and timestamp provenance. Unprovenanced model data is excluded;
-if only a labeled fixture can supply a passing card, the recording is named `site_tour_fixture.mp4`.
-The thread distinguishes a selected case study from the uniform pilot and never invents a missing rate.
-
-To update the real atlas and annotated model with both measured subsets (pilot wins duplicate weights):
-
-```bash
-PYTHONPATH=engine .venv/bin/python -m swa.export_site --model csp_yolo1 \
-  --scores-dirs runs/csp_yolo1/scores_casestudy runs/csp_yolo1/scores_pilot
-PYTHONPATH=engine .venv/bin/python -m swa.export_modelpy --model csp_yolo1 \
-  --scores-dirs runs/csp_yolo1/scores_casestudy runs/csp_yolo1/scores_pilot
-```
-
-The combined atlas rates describe its exported verdicts, including selected case-study weights;
-only the uniform pilot's report is used for the launch's paper comparison.
