@@ -3,6 +3,9 @@
 **Every nonzero MLP weight of OpenAI's weight-sparse transformer, explained by an executable Python rule — with
 no LLM in the loop.**
 
+**Browse every weight:** [tbcresearch.org/atlas](https://tbcresearch.org/atlas/) ·
+**Write-up:** [tbcresearch.org/research/sparse-weight-atlas](https://tbcresearch.org/research/sparse-weight-atlas/)
+
 This project is inspired by, and reproduces the metric of,
 **[Individual Parameters in Weight-Sparse Transformers Appear Interpretable](https://arxiv.org/abs/2607.02964)**
 by Arnau Marin-Llobet and Stefan Heimersheim (NeurIPS 2026; project site

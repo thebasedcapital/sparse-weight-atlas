@@ -1,6 +1,6 @@
 # launch thread (hand-edited from thread.md; numbers from runs/csp_yolo1/pilot/report.json and scores_casestudy)
 
-draft only. replace {repo_url} / {site_url} before posting. send via steel/x-feed per skill rules after approval.
+draft only. replace https://github.com/thebasedcapital/sparse-weight-atlas / https://tbcresearch.org/atlas/ before posting. send via steel/x-feed per skill rules after approval.
 
 ## 1 — image: assets/receipt_csp_yolo1.png
 we reproduced a neurips 2026 interpretability result with zero llm calls.
@@ -27,8 +27,8 @@ how: zero one weight → exact per-token loss change → rust search over a caus
 ## 5
 uniform sample of 1,024 weights, codeparrot-valid, every deviation from the paper in the readme.
 
-browse every weight: {site_url}
-code: {repo_url}
+browse every weight: https://tbcresearch.org/atlas/
+code: https://github.com/thebasedcapital/sparse-weight-atlas
 
 ## quote tweet of https://x.com/Arnauya/status/2106229708438254025
-@Arnauya @sheimersheim reproduced your table 1 rate with no llm in the loop: 17.3% vs 15.0% robust on csp_yolo1, and found the digit gates of neuron 1863 on its own. most passing rules are broad though; vs a coverage-matched null it's 10.5%. code: {repo_url}
+@Arnauya @sheimersheim reproduced your table 1 rate with no llm in the loop: 17.3% vs 15.0% robust on csp_yolo1, and found the digit gates of neuron 1863 on its own. most passing rules are broad though; vs a coverage-matched null it's 10.5%. code: https://github.com/thebasedcapital/sparse-weight-atlas
