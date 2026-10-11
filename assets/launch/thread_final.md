@@ -10,9 +10,9 @@ the paper had an llm write 100 candidate python rules per weight. a rust search 
 then we stress-tested the test.
 
 ## 2 — image: assets/launch/headline.png
-same rules, same exact held-out scores, three nulls: 17.3% / 10.5% / 1.8%.
+same rules, same exact held-out scores, three nulls: 17.3% / 10.5% / 1.8%. most passing rules are broad gates.
 
-two thirds of the passing rules are broad gates ("a recent token is alphabetic") covering >30% of all text. the paper's null cone can't tell them from narrow ones. a random mask of the same coverage can.
+but on the 1,669 weights that move the loss most (|Δce| ≥ 1e-3): 40.5% / 39.2% / 33.7%, with narrow rules (median coverage 7%).
 
 ## 3 — image: assets/launch/casestudy_1863.png
 where it works, it really works: the paper's digit-detector neuron 1863.
