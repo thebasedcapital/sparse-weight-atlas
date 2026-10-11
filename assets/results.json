@@ -667,14 +667,28 @@
   "median_cov_of_cone_passers": 0.0733642578125,
   "note": "selected by impact, not a uniform sample"
  },
- "case_study_neuron_1863": {
-  "scored": 36,
-  "strict_pass": 8
- },
  "compute": {
   "gpu": "Quadro RTX 4000 8GB",
   "profile_all_weights_h": 50.8,
   "pilot_scoring_h": 11.8,
   "highimpact_scoring_h": 19.4
+ },
+ "case_study": {
+  "neurons": [
+   1863,
+   863,
+   2790
+  ],
+  "weights": 37,
+  "scored": 36,
+  "strict_pass": 8,
+  "neuron_1863": {
+   "weights": 23,
+   "scored": 23,
+   "strict_pass": 8,
+   "passing_rule": [
+    "token at pos+0 is digit_only"
+   ]
+  }
  }
 }
